@@ -1,0 +1,803 @@
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from PIL import Image, ImageDraw, ImageOps, ImageFont
+import requests
+from io import BytesIO
+import mysql.connector
+import os
+
+# Configuração do bot e do banco de dados
+API_TOKEN = 'YOUR_API_TOKEN'
+bot = telebot.TeleBot(API_TOKEN)
+
+db_config = {
+    'user': 'seu_usuario',
+    'password': 'sua_senha',
+    'host': 'localhost',
+    'database': 'seu_banco_de_dados'
+}
+
+ALBUM_PATH = 'album.png'
+BACKGROUND_URL = 'https://i.pinimg.com/564x/19/a5/b0/19a5b0b149cd1a26f3fa7766061e902c.jpg'
+BORDER_COLOR = '#DE3163'
+CACHE_DIR = 'sticker_cache'
+
+# Verifique se o diretório de cache existe
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+
+def get_cached_sticker(sticker_url, hole_width, hole_height):
+    """Retorna a imagem da figurinha redimensionada do cache ou faz o download e redimensiona se não estiver no cache."""
+    # Gere um nome de arquivo a partir da URL da figurinha
+    sticker_filename = os.path.join(CACHE_DIR, os.path.basename(sticker_url))
+
+    if not os.path.exists(sticker_filename):
+        response = requests.get(sticker_url)
+        sticker_image = Image.open(BytesIO(response.content))
+        sticker_image = sticker_image.resize((hole_width, hole_height))
+
+        # Adicionar borda à figurinha
+        bordered_sticker = ImageOps.expand(sticker_image, border=2, fill=BORDER_COLOR)
+        bordered_sticker.save(sticker_filename)
+    else:
+        bordered_sticker = Image.open(sticker_filename)
+
+    return bordered_sticker
+
+def create_album(user_id, page):
+    try:
+        # Conecte-se ao banco de dados
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # Baixar a imagem de fundo
+        response = requests.get(BACKGROUND_URL)
+        background = Image.open(BytesIO(response.content))
+
+        # Dimensões da imagem 9:16 (por exemplo, 540x960 pixels)
+        width, height = 540, 960
+        background = background.resize((width, height))
+
+        # Crie uma nova imagem com o fundo
+        img = Image.new('RGB', (width, height))
+        img.paste(background, (0, 0))
+
+        draw = ImageDraw.Draw(img)
+
+        # Dimensões dos buracos pretos
+        hole_width, hole_height = 140, 210
+        horizontal_padding = 20
+        vertical_padding = 40  # Aumentando o espaçamento vertical
+
+        # Calcula a posição inicial para centralizar a grade
+        total_width = 3 * hole_width + 2 * horizontal_padding
+        total_height = 3 * hole_height + 2 * vertical_padding
+        start_x = (width - total_width) // 2
+        start_y = (height - total_height) // 2
+
+        # Coordenadas dos buracos (3x3)
+        coordinates = []
+        for row in range(3):
+            for col in range(3):
+                x0 = start_x + col * (hole_width + horizontal_padding)
+                y0 = start_y + row * (hole_height + vertical_padding)
+                x1 = x0 + hole_width
+                y1 = y0 + hole_height
+                coordinates.append((x0, y0, x1, y1))
+
+        # Verifique quais figurinhas o usuário possui na página atual
+        cursor.execute('''
+            SELECT stickers.id, stickers.image_path 
+            FROM user_stickers 
+            JOIN stickers ON user_stickers.sticker_id = stickers.id 
+            WHERE user_stickers.user_id = %s AND stickers.page = %s
+        ''', (user_id, page))
+        stickers = cursor.fetchall()
+
+        # Dicionário de figurinhas do usuário
+        user_stickers = {sticker[0]: sticker[1] for sticker in stickers}
+
+        # Preencha os buracos com as figurinhas
+        for idx, coord in enumerate(coordinates):
+            sticker_id = (page - 1) * 9 + idx + 1
+            if sticker_id in user_stickers:
+                # Carregar a figurinha correspondente do cache ou baixar se não estiver no cache
+                bordered_sticker = get_cached_sticker(user_stickers[sticker_id], hole_width, hole_height)
+                
+                # Colar a figurinha com borda na posição correta
+                img.paste(bordered_sticker, (coord[0], coord[1]))
+            else:
+                # Preencher com buraco preto se a figurinha não existir
+                draw.rectangle(coord, fill='black')
+
+        # Adicionar texto "Página x/5" no rodapé
+        font = ImageFont.load_default()
+        text = f"Página {page}/5"
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_x = (width - text_width) // 2
+        text_y = height - 30  # 30 pixels acima do rodapé
+        draw.text((text_x, text_y), text, fill="black", font=font)
+
+        # Salve a imagem
+        img.save(ALBUM_PATH)
+        cursor.close()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Erro ao criar o álbum: {e}")
+        return False
+
+def get_navigation_markup():
+    markup = InlineKeyboardMarkup()
+    for i in range(1, 6):
+        markup.add(InlineKeyboardButton(str(i), callback_data=f'page_{i}'))
+    return markup
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "Bem-vindo ao álbum de figurinhas do Dia dos Namorados!")
+
+@bot.message_handler(commands=['album'])
+def send_album(message):
+    user_id = message.from_user.id
+    page = 1  # Página inicial
+    bot.send_message(message.chat.id, "Gerando álbum, por favor aguarde...")
+    if create_album(user_id, page):
+        with open(ALBUM_PATH, 'rb') as photo:
+            bot.send_photo(message.chat.id, photo, reply_markup=get_navigation_markup())
+        bot.send_message(message.chat.id, "Álbum gerado com sucesso!")
+    else:
+        bot.send_message(message.chat.id, "Houve um erro ao gerar o álbum. Tente novamente mais tarde.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('page_'))
+def callback_page(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[1])
+    bot.send_message(call.message.chat.id, f"Gerando álbum da página {page}, por favor aguarde...")
+    if create_album(user_id, page):
+        with open(ALBUM_PATH, 'rb') as photo:
+            bot.edit_message_media(media=telebot.types.InputMediaPhoto(photo), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_navigation_markup())
+        bot.send_message(call.message.chat.id, "Álbum atualizado com sucesso!")
+    else:
+        bot.send_message(call.message.chat.id, "Houve um erro ao atualizar o álbum. Tente novamente mais tarde.")
+
+@bot.message_handler(commands=['send_sticker'])
+def send_sticker(message):
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            bot.reply_to(message, "Uso: /send_sticker <user_id> <sticker_id>")
+            return
+
+        recipient_id = int(args[1])
+        sticker_id = int(args[2])
+
+        # Conecte-se ao banco de dados
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # Verifique se a figurinha existe
+        cursor.execute('SELECT id FROM stickers WHERE id = %s', (sticker_id,))
+        if not cursor.fetchone():
+            bot.reply_to(message, "Figurinha não encontrada.")
+            cursor.close()
+            conn.close()
+            return
+
+        # Adicione a figurinha ao usuário destinatário
+        cursor.execute('INSERT INTO user_stickers (user_id, sticker_id) VALUES (%s, %s)', (recipient_id, sticker_id))
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        bot.reply_to(message, f"Figurinha {sticker_id} enviada para o usuário {recipient_id} com sucesso!")
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao enviar a figurinha: {e}")
+
+# Inicie o bot
+
+@bot.message_handler(commands=['send_sticker'])
+def send_sticker(message):
+    try:
+        args = message.text.split()
+        if len(args) != 3:
+            bot.reply_to(message, "Uso: /send_sticker <user_id> <sticker_id>")
+            return
+
+        recipient_id = int(args[1])
+        sticker_id = int(args[2])
+
+        # Conecte-se ao banco de dados
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # Verifique se a figurinha existe
+        cursor.execute('SELECT id FROM stickers WHERE id = %s', (sticker_id,))
+        if not cursor.fetchone():
+            bot.reply_to(message, "Figurinha não encontrada.")
+            cursor.close()
+            conn.close()
+            return
+
+        # Adicione a figurinha ao usuário destinatário
+        cursor.execute('INSERT INTO user_stickers (user_id, sticker_id) VALUES (%s, %s)', (recipient_id, sticker_id))
+        conn.commit()
+
+        cursor.close()
+        conn.close()
+
+        bot.reply_to(message, f"Figurinha {sticker_id} enviada para o usuário {recipient_id} com sucesso!")
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao enviar a figurinha: {e}")
+
+@bot.message_handler(commands=['figurinhas'])
+def send_random_stickers(message):
+    try:
+        user_id = message.from_user.id
+
+        # Conecte-se ao banco de dados
+        conn = mysql.connector.connect(**db_config)
+        cursor = conn.cursor()
+
+        # Selecionar 5 figurinhas aleatórias, permitindo repetidas
+        cursor.execute('SELECT id, image_path FROM stickers')
+        all_stickers = cursor.fetchall()
+        random_stickers = [random.choice(all_stickers) for _ in range(5)]
+
+        # Verificar quais figurinhas o usuário já possui
+        cursor.execute('SELECT sticker_id FROM inventariofig WHERE user_id = %s', (user_id,))
+        user_stickers = {row[0] for row in cursor.fetchall()}
+
+        # Adicionar as figurinhas ao inventário do usuário e determinar bordas
+        sticker_borders = []
+        for sticker_id, sticker_url in random_stickers:
+            if sticker_id in user_stickers:
+                # Figurinha repetida
+                border_color = 'black'
+                border_width = 2
+                cursor.execute('UPDATE inventariofig SET quantity = quantity + 1 WHERE user_id = %s AND sticker_id = %s', (user_id, sticker_id))
+            else:
+                # Figurinha nova
+                border_color = 'gold'
+                border_width = 5
+                cursor.execute('INSERT INTO inventariofig (user_id, sticker_id, quantity) VALUES (%s, %s, 1)', (user_id, sticker_id))
+            sticker_borders.append((sticker_url, border_color, border_width))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Baixar a imagem de fundo
+        background_url = 'https://telegra.ph/file/33879a99c60ca9d11e60c.png'
+        response = requests.get(background_url)
+        background = Image.open(BytesIO(response.content))
+
+        # Definir tamanho e layout da imagem final (quadrada)
+        width, height = background.size
+        sticker_width, sticker_height = 140, 210  # Tamanho das figurinhas
+        padding = 20  # Espaço entre figurinhas
+
+        # Redimensionar fundo para um quadrado se necessário
+        background = background.resize((width, width))
+
+        # Criar uma nova imagem com o fundo
+        img = Image.new('RGB', (width, width))
+        img.paste(background, (0, 0))
+
+        draw = ImageDraw.Draw(img)
+
+        # Coordenadas das 5 figurinhas (3-2 centralizado)
+        start_x = (width - 3 * sticker_width - 2 * padding) // 2
+        start_y = (width - 2 * sticker_height - padding) // 2
+
+        coordinates = [
+            (start_x, start_y),
+            (start_x + sticker_width + padding, start_y),
+            (start_x + 2 * (sticker_width + padding), start_y),
+            (start_x + (sticker_width // 2) + (padding // 2), start_y + sticker_height + padding),
+            (start_x + sticker_width + (padding // 2) + (sticker_width // 2) + padding, start_y + sticker_height + padding)
+        ]
+
+        # Adicionar as figurinhas à imagem
+        for (sticker_url, border_color, border_width), coord in zip(sticker_borders, coordinates):
+            response = requests.get(sticker_url)
+            sticker_image = Image.open(BytesIO(response.content))
+            sticker_image = sticker_image.resize((sticker_width, sticker_height))
+            
+            # Adicionar borda à figurinha
+            bordered_sticker = ImageOps.expand(sticker_image, border=border_width, fill=border_color)
+            
+            # Colar a figurinha na posição correta
+            img.paste(bordered_sticker, coord)
+
+        # Salvar a imagem final
+        result_image_path = 'random_stickers.png'
+        img.save(result_image_path)
+
+        # Enviar a imagem das figurinhas sorteadas
+        with open(result_image_path, 'rb') as photo:
+            bot.send_photo(message.chat.id, photo)
+
+        bot.reply_to(message, "5 figurinhas aleatórias foram adicionadas ao seu inventário!")
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao adicionar as figurinhas: {e}")
+
+def get_cached_sticker(sticker_url, hole_width, hole_height):
+    """Retorna a imagem da figurinha redimensionada do cache ou faz o download e redimensiona se não estiver no cache."""
+    response = requests.get(sticker_url)
+    sticker_image = Image.open(BytesIO(response.content))
+    sticker_image = sticker_image.resize((hole_width, hole_height))
+    bordered_sticker = ImageOps.expand(sticker_image, border=2, fill='black')  # Borda padrão preta
+    return bordered_sticker
+
+def create_album(user_id, page):
+    try:
+        # Conecte-se ao banco de dados
+        conn, cursor = conectar_banco_dados()
+
+        # Baixar a imagem de fundo
+        response = requests.get(BACKGROUND_URL)
+        background = Image.open(BytesIO(response.content))
+
+        # Dimensões da imagem 9:16 (por exemplo, 540x960 pixels)
+        width, height = 540, 960
+        background = background.resize((width, height))
+
+        # Crie uma nova imagem com o fundo
+        img = Image.new('RGB', (width, height))
+        img.paste(background, (0, 0))
+
+        draw = ImageDraw.Draw(img)
+
+        # Dimensões dos buracos pretos
+        hole_width, hole_height = 140, 210
+        horizontal_padding = 20
+        vertical_padding = 40  # Aumentando o espaçamento vertical
+
+        # Calcula a posição inicial para centralizar a grade
+        total_width = 3 * hole_width + 2 * horizontal_padding
+        total_height = 3 * hole_height + 2 * vertical_padding
+        start_x = (width - total_width) // 2
+        start_y = (height - total_height) // 2
+
+        # Coordenadas dos buracos (3x3)
+        coordinates = []
+        for row in range(3):
+            for col in range(3):
+                x0 = start_x + col * (hole_width + horizontal_padding)
+                y0 = start_y + row * (hole_height + vertical_padding)
+                x1 = x0 + hole_width
+                y1 = y0 + hole_height
+                coordinates.append((x0, y0, x1, y1))
+
+        # Verifique quais figurinhas o usuário possui na página atual
+        cursor.execute('''
+            SELECT stickers.id, stickers.image_path 
+            FROM inventariofig 
+            JOIN stickers ON inventariofig.sticker_id = stickers.id 
+            WHERE inventariofig.user_id = %s AND stickers.page = %s
+        ''', (user_id, page))
+        stickers = cursor.fetchall()
+
+        # Dicionário de figurinhas do usuário
+        user_stickers = {sticker[0]: sticker[1] for sticker in stickers}
+
+        # Preencha os buracos com as figurinhas
+        for idx, coord in enumerate(coordinates):
+            sticker_id = (page - 1) * 9 + idx + 1
+            if sticker_id in user_stickers:
+                # Carregar a figurinha correspondente do cache ou baixar se não estiver no cache
+                bordered_sticker = get_cached_sticker(user_stickers[sticker_id], hole_width, hole_height)
+                
+                # Colar a figurinha com borda na posição correta
+                img.paste(bordered_sticker, (coord[0], coord[1]))
+            else:
+                # Preencher com buraco preto se a figurinha não existir
+                draw.rectangle(coord, fill='black')
+
+        # Adicionar texto "Página x/5" no rodapé
+        font = ImageFont.load_default()
+        text = f"Página {page}/5"
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_x = (width - text_width) // 2
+        text_y = height - 30  # 30 pixels acima do rodapé
+        draw.text((text_x, text_y), text, fill="black", font=font)
+
+        # Salve a imagem
+        img.save(ALBUM_PATH)
+        cursor.close()
+        conn.close()
+        return True
+    
+    except Exception as e:
+        print(f"Erro ao criar o álbum: {e}")
+        return False
+def get_user_stickers(user_id, page, stickers_per_page=9):
+    conn, cursor = conectar_banco_dados()
+    offset = (page - 1) * stickers_per_page
+    cursor.execute('''
+        SELECT stickers.id, stickers.image_path
+        FROM inventariofig
+        JOIN stickers ON inventariofig.sticker_id = stickers.id
+        WHERE inventariofig.user_id = %s
+        LIMIT %s OFFSET %s
+    ''', (user_id, stickers_per_page, offset))
+    stickers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return stickers
+
+def get_total_pages(user_id, stickers_per_page=9):
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('''
+        SELECT COUNT(*)
+        FROM inventariofig
+        WHERE user_id = %s
+    ''', (user_id,))
+    total_stickers = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return (total_stickers + stickers_per_page - 1) // stickers_per_page
+
+def get_album_markup(page, total_pages):
+    markup = InlineKeyboardMarkup()
+    if page > 1:
+        markup.add(InlineKeyboardButton('Anterior', callback_data=f'prev_{page - 1}'))
+    if page < total_pages:
+        markup.add(InlineKeyboardButton('Próximo', callback_data=f'next_{page + 1}'))
+    return markup
+
+def get_user_stickers(user_id, page, stickers_per_page=9):
+    conn, cursor = conectar_banco_dados()
+    offset = (page - 1) * stickers_per_page
+    cursor.execute('''
+        SELECT stickers.id, stickers.name, stickers.image_path, SUM(inventariofig.quantity)
+        FROM inventariofig
+        JOIN stickers ON inventariofig.sticker_id = stickers.id
+        WHERE inventariofig.user_id = %s
+        GROUP BY stickers.id
+        LIMIT %s OFFSET %s
+    ''', (user_id, stickers_per_page, offset))
+    stickers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return stickers
+
+def get_total_pages(user_id, stickers_per_page=9):
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('''
+        SELECT COUNT(DISTINCT sticker_id)
+        FROM inventariofig
+        WHERE user_id = %s
+    ''', (user_id,))
+    total_stickers = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return (total_stickers + stickers_per_page - 1) // stickers_per_page
+
+def get_total_stickers(user_id):
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('''
+        SELECT COUNT(DISTINCT sticker_id)
+        FROM inventariofig
+        WHERE user_id = %s
+    ''', (user_id,))
+    total_stickers = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return total_stickers
+
+def get_album_markup(page, total_pages):
+    markup = InlineKeyboardMarkup()
+    if page > 1:
+        markup.add(InlineKeyboardButton('Anterior', callback_data=f'prev_{page - 1}'))
+    if page < total_pages:
+        markup.add(InlineKeyboardButton('Próximo', callback_data=f'next_{page + 1}'))
+    return markup
+
+@bot.message_handler(commands=['alb'])
+def send_album_list(message):
+    user_id = message.from_user.id
+    page = 1
+    stickers = get_user_stickers(user_id, page)
+    total_pages = get_total_pages(user_id)
+    total_stickers = get_total_stickers(user_id)
+
+    if not stickers:
+        bot.reply_to(message, "Você não possui figurinhas.")
+        return
+
+    user_name = message.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" + (f" (x{sticker[3]})" if sticker[3] > 1 else "") for sticker in stickers])
+    markup = get_album_markup(page, total_pages)
+    bot.send_message(message.chat.id, f"Álbum de figurinhas de {user_name}:\n\n{total_stickers}/40\n\n{album_text}", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('prev_') or call.data.startswith('next_'))
+def callback_page(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[1])
+    stickers = get_user_stickers(user_id, page)
+    total_pages = get_total_pages(user_id)
+    total_stickers = get_total_stickers(user_id)
+
+    if not stickers:
+        bot.answer_callback_query(call.id, "Nenhuma figurinha nesta página.")
+        return
+
+    user_name = call.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" + (f" (x{sticker[3]})" if sticker[3] > 1 else "") for sticker in stickers])
+    markup = get_album_markup(page, total_pages)
+    bot.edit_message_text(f"Álbum de figurinhas de {user_name}:\n\n{total_stickers}/40\n\n{album_text}", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('prev_') or call.data.startswith('next_'))
+def callback_page(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[1])
+    stickers = get_user_stickers(user_id, page)
+    total_pages = get_total_pages(user_id)
+
+    if not stickers:
+        bot.answer_callback_query(call.id, "Nenhuma figurinha nesta página.")
+        return
+
+    album_text = '\n'.join([f"Figurinha {sticker[0]}" for sticker in stickers])
+    markup = get_album_markup(page, total_pages)
+    bot.edit_message_text(f"Álbum (Página {page}/{total_pages}):\n\n{album_text}", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
+def get_sticker_by_id(sticker_id):
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('''
+        SELECT id, name, image_path 
+        FROM stickers 
+        WHERE id = %s
+    ''', (sticker_id,))
+    sticker = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return sticker
+
+@bot.message_handler(commands=['fig'])
+def send_sticker(message):
+    try:
+        args = message.text.split()
+        if len(args) != 2:
+            bot.reply_to(message, "Uso: /fig <id>")
+            return
+        
+        sticker_id = int(args[1].replace('luv', ''))
+        sticker = get_sticker_by_id(sticker_id)
+
+        if not sticker:
+            bot.reply_to(message, "Figurinha não encontrada.")
+            return
+
+        sticker_id, name, image_path = sticker
+        response = requests.get(image_path)
+        sticker_image = Image.open(BytesIO(response.content))
+
+        # Adicionar borda à figurinha
+        bordered_sticker = ImageOps.expand(sticker_image, border=2, fill='black')
+        
+        # Salvar a imagem final temporariamente
+        result_image_path = 'sticker.png'
+        bordered_sticker.save(result_image_path)
+
+        caption = f"ID: luv{sticker_id}\nNome: {name}"
+
+        # Enviar a imagem da figurinha
+        with open(result_image_path, 'rb') as photo:
+            bot.send_photo(message.chat.id, photo, caption=caption)
+
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao buscar a figurinha: {e}")
+
+@bot.message_handler(commands=['trocafig'])
+def trade_stickers(message):
+    try:
+        if not message.reply_to_message:
+            bot.reply_to(message, "Você precisa responder a mensagem do usuário com quem deseja trocar figurinhas.")
+            return
+
+        user_id = message.from_user.id
+        target_user_id = message.reply_to_message.from_user.id
+
+        args = message.text.split()
+        if len(args) != 3:
+            bot.reply_to(message, "Uso: /trocafig <meu_idfig> <idfig_alvo>")
+            return
+
+        my_sticker_id = int(args[1].replace('luv', ''))
+        target_sticker_id = int(args[2].replace('luv', ''))
+
+        conn, cursor = conectar_banco_dados()
+
+        # Verificar se ambos os usuários possuem as figurinhas especificadas
+        cursor.execute('''
+            SELECT quantity FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (user_id, my_sticker_id))
+        my_sticker = cursor.fetchone()
+
+        cursor.execute('''
+            SELECT quantity FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (target_user_id, target_sticker_id))
+        target_sticker = cursor.fetchone()
+
+        if not my_sticker or not target_sticker:
+            bot.reply_to(message, "Um dos usuários não possui a figurinha especificada.")
+            cursor.close()
+            conn.close()
+            return
+
+        # Enviar solicitação de troca ao usuário respondido
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton('Aceitar', callback_data=f'accept_{user_id}_{my_sticker_id}_{target_sticker_id}_{message.chat.id}'))
+        markup.add(InlineKeyboardButton('Recusar', callback_data=f'reject_{message.chat.id}'))
+
+        bot.send_message(
+            message.chat.id,
+            f"{message.reply_to_message.from_user.first_name}, você tem {target_sticker[0]} figurinha(s) do ID luv{target_sticker_id}. "
+            f"Deseja trocar com {message.from_user.first_name} "
+            f"pela figurinha ID luv{my_sticker_id}?",
+            reply_markup=markup,
+            reply_to_message_id=message.reply_to_message.message_id
+        )
+
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao realizar a troca: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('accept_') or call.data.startswith('reject_'))
+def handle_trade_response(call):
+    try:
+        if call.data.startswith('reject_'):
+            chat_id = int(call.data.split('_')[1])
+            bot.answer_callback_query(call.id, "Troca recusada.")
+            bot.edit_message_text("Troca recusada.", chat_id=chat_id, message_id=call.message.message_id)
+            return
+
+        data = call.data.split('_')
+        user_id = int(data[1])
+        my_sticker_id = int(data[2])
+        target_sticker_id = int(data[3])
+        chat_id = int(data[4])
+        target_user_id = call.from_user.id
+
+        conn, cursor = conectar_banco_dados()
+
+        # Verificar novamente se ambos os usuários possuem as figurinhas especificadas
+        cursor.execute('''
+            SELECT quantity FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (user_id, my_sticker_id))
+        my_sticker = cursor.fetchone()
+
+        cursor.execute('''
+            SELECT quantity FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (target_user_id, target_sticker_id))
+        target_sticker = cursor.fetchone()
+
+        if not my_sticker or not target_sticker:
+            bot.answer_callback_query(call.id, "Um dos usuários não possui mais a figurinha especificada.")
+            cursor.close()
+            conn.close()
+            return
+
+        # Realizar a troca de figurinhas
+        cursor.execute('''
+            INSERT INTO inventariofig (user_id, sticker_id, quantity)
+            VALUES (%s, %s, 1)
+            ON DUPLICATE KEY UPDATE quantity = quantity + 1
+        ''', (target_user_id, my_sticker_id))
+
+        cursor.execute('''
+            INSERT INTO inventariofig (user_id, sticker_id, quantity)
+            VALUES (%s, %s, 1)
+            ON DUPLICATE KEY UPDATE quantity = quantity + 1
+        ''', (user_id, target_sticker_id))
+
+        # Atualizar a quantidade das figurinhas trocadas
+        cursor.execute('''
+            UPDATE inventariofig SET quantity = quantity - 1 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (user_id, my_sticker_id))
+
+        cursor.execute('''
+            UPDATE inventariofig SET quantity = quantity - 1 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (target_user_id, target_sticker_id))
+
+        # Remover a figurinha do inventário se a quantidade for zero
+        cursor.execute('''
+            DELETE FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s AND quantity = 0
+        ''', (user_id, my_sticker_id))
+
+        cursor.execute('''
+            DELETE FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s AND quantity = 0
+        ''', (target_user_id, target_sticker_id))
+
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        bot.edit_message_text("Troca realizada com sucesso!", chat_id=chat_id, message_id=call.message.message_id)
+        bot.send_message(chat_id, f"{call.from_user.first_name} aceitou a troca. {call.from_user.first_name} trocou luv{my_sticker_id} por luv{target_sticker_id} com {call.from_user.first_name}.")
+
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"Houve um erro ao realizar a troca: {e}")
+def get_all_stickers():
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('SELECT id, name FROM stickers')
+    all_stickers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return all_stickers
+
+def get_user_stickers(user_id):
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('SELECT sticker_id FROM inventariofig WHERE user_id = %s', (user_id,))
+    user_stickers = {row[0] for row in cursor.fetchall()}
+    cursor.close()
+    conn.close()
+    return user_stickers
+
+def get_missing_stickers(user_id, page, stickers_per_page=9):
+    all_stickers = get_all_stickers()
+    user_stickers = get_user_stickers(user_id)
+    missing_stickers = [sticker for sticker in all_stickers if sticker[0] not in user_stickers]
+    
+    start = (page - 1) * stickers_per_page
+    end = start + stickers_per_page
+    return missing_stickers[start:end], len(missing_stickers)
+
+def get_missing_album_markup(page, total_pages):
+    markup = InlineKeyboardMarkup()
+    if page > 1:
+        markup.add(InlineKeyboardButton('Anterior', callback_data=f'missing_prev_{page - 1}'))
+    if page < total_pages:
+        markup.add(InlineKeyboardButton('Próximo', callback_data=f'missing_next_{page + 1}'))
+    return markup
+
+@bot.message_handler(commands=['albf'])
+def send_missing_album_list(message):
+    user_id = message.from_user.id
+    page = 1
+    stickers_per_page = 9
+    missing_stickers, total_missing = get_missing_stickers(user_id, page, stickers_per_page)
+    total_pages = (total_missing + stickers_per_page - 1) // stickers_per_page
+
+    if not missing_stickers:
+        bot.reply_to(message, "Você já possui todas as figurinhas.")
+        return
+
+    user_name = message.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" for sticker in missing_stickers])
+    markup = get_missing_album_markup(page, total_pages)
+    bot.send_message(message.chat.id, f"Álbum de figurinhas faltantes de {user_name}:\n\n{total_missing}/40\n\n{album_text}", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('missing_prev_') or call.data.startswith('missing_next_'))
+def callback_page_missing(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[2])
+    stickers_per_page = 9
+    missing_stickers, total_missing = get_missing_stickers(user_id, page, stickers_per_page)
+    total_pages = (total_missing + stickers_per_page - 1) // stickers_per_page
+
+    if not missing_stickers:
+        bot.answer_callback_query(call.id, "Nenhuma figurinha faltante nesta página.")
+        return
+
+    user_name = call.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" for sticker in missing_stickers])
+    markup = get_missing_album_markup(page, total_pages)
+    bot.edit_message_text(f"Álbum de figurinhas faltantes de {user_name}:\n\n{total_missing}/40\n\n{album_text}", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
+bot.polling()
