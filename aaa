@@ -800,4 +800,381 @@ def callback_page_missing(call):
     bot.edit_message_text(f"Álbum de figurinhas faltantes de {user_name}:\n\n{total_missing}/40\n\n{album_text}", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
     bot.answer_callback_query(call.id)
 
+# Função para lidar com o comando /gnome
+@bot.message_handler(commands=['gnome'])
+def gnome(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(processar_comando_gnome, chat_id, user_id, message)
+        future.result()
+
+def processar_comando_gnome(chat_id, user_id, message):
+    conn, cursor = conectar_banco_dados()
+    try:
+        nome = message.text.split('/gnome', 1)[1].strip()
+
+        if nome.startswith("e "):
+            nome_evento = nome[1:].strip()
+            sql_eventos_exatas = """
+                SELECT
+                    e.id_personagem,
+                    e.nome,
+                    e.subcategoria,
+                    e.categoria,
+                    e.evento,
+                    e.imagem,
+                    e.emoji
+                FROM evento e
+                WHERE e.nome = %s
+                LIMIT 50
+            """
+            sql_eventos_parciais = """
+                SELECT
+                    e.id_personagem,
+                    e.nome,
+                    e.subcategoria,
+                    e.categoria,
+                    e.evento,
+                    e.imagem,
+                    e.emoji
+                FROM evento e
+                WHERE e.nome LIKE %s AND e.nome <> %s
+                LIMIT 50
+            """
+            values_eventos_exatas = (nome_evento,)
+            values_eventos_parciais = (f"%{nome_evento}%", nome_evento)
+
+            cursor.execute(sql_eventos_exatas, values_eventos_exatas)
+            resultados_exatos = cursor.fetchall()
+
+            cursor.execute(sql_eventos_parciais, values_eventos_parciais)
+            resultados_parciais = cursor.fetchall()
+
+            resultados_personagens = resultados_exatos + resultados_parciais
+        else:
+            sql_personagens_exatas = """
+                SELECT
+                    p.id_personagem,
+                    p.nome,
+                    p.subcategoria,
+                    p.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    p.imagem,
+                    p.emoji
+                FROM personagens p
+                LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE p.nome = %s
+                LIMIT 50
+            """
+            sql_personagens_parciais = """
+                SELECT
+                    p.id_personagem,
+                    p.nome,
+                    p.subcategoria,
+                    p.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    p.imagem,
+                    p.emoji
+                FROM personagens p
+                LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE p.nome LIKE %s AND p.nome <> %s
+                LIMIT 50
+            """
+            values_personagens_exatas = (user_id, nome)
+            values_personagens_parciais = (user_id, f"%{nome}%", nome)
+
+            cursor.execute(sql_personagens_exatas, values_personagens_exatas)
+            resultados_exatos = cursor.fetchall()
+
+            cursor.execute(sql_personagens_parciais, values_personagens_parciais)
+            resultados_parciais = cursor.fetchall()
+
+            resultados_personagens = resultados_exatos + resultados_parciais
+
+        if len(resultados_personagens) == 0:
+            bot.send_message(chat_id, "Nenhum personagem encontrado.", reply_to_message_id=message.message_id)
+            return
+
+        mensagens = []
+        for resultado_personagem in resultados_personagens:
+            if len(resultado_personagem) == 7:  # Caso para eventos
+                id_personagem, nome_personagem, subcategoria, categoria, evento, imagem_url, emoji = resultado_personagem
+                quantidade_usuario = None  # Definido como None, pois eventos não têm quantidade
+            else:
+                id_personagem, nome_personagem, subcategoria, categoria, quantidade_usuario, imagem_url, emoji = resultado_personagem
+
+            mensagem = f"💌 | Personagem: \n\n<code>{id_personagem}</code> • {nome_personagem}\nde {subcategoria}"
+            if quantidade_usuario is None:
+                mensagem += f"\n\n🌧 | Tempo fechado..."
+            elif quantidade_usuario > 0:
+                mensagem += f"\n\n☀ | {quantidade_usuario}⤫"
+            else:
+                mensagem += f"\n\n🌧 | Tempo fechado..."
+
+            gif_url = obter_gif_url(id_personagem, user_id)
+            if gif_url:
+                mensagens.append((gif_url, mensagem))
+            elif imagem_url:
+                mensagens.append((imagem_url, mensagem))
+            else:
+                mensagens.append((None, mensagem))
+
+        user_messages[f"{chat_id}_{nome}"] = mensagens
+
+        if len(mensagens) == 1:
+            media_url, mensagem = mensagens[0]
+            if media_url and media_url.lower().endswith(".gif"):
+                bot.send_animation(chat_id, media_url, caption=mensagem, parse_mode="HTML", reply_to_message_id=message.message_id)
+            elif media_url and media_url.lower().endswith(".mp4"):
+                bot.send_video(chat_id, media_url, caption=mensagem, parse_mode="HTML", reply_to_message_id=message.message_id)
+            elif media_url and media_url.lower().endswith((".jpeg", ".jpg", ".png")):
+                bot.send_photo(chat_id, media_url, caption=mensagem, parse_mode="HTML", reply_to_message_id=message.message_id)
+            else:
+                bot.send_message(chat_id, mensagem, parse_mode="HTML", reply_to_message_id=message.message_id)
+        else:
+            enviar_mensagem_com_botoes(chat_id, mensagens, 0, reply_to_message_id=message.message_id, nome_pesquisa=nome)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+    finally:
+        cursor.close()
+        conn.close()
+
+def enviar_mensagem_com_botoes(chat_id, mensagens, current_index, reply_to_message_id=None, nome_pesquisa=''):
+    total_count = len(mensagens)
+
+    if total_count == 0:
+        bot.send_message(chat_id, "Nenhum personagem encontrado.", reply_to_message_id=reply_to_message_id)
+        return
+
+    media_url, mensagem = mensagens[current_index]
+    markup = criar_marcacao_navegacao(current_index, total_count, nome_pesquisa)
+
+    if media_url and media_url.lower().endswith(".gif"):
+        bot.send_animation(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+    elif media_url and media_url.lower().endswith(".mp4"):
+        bot.send_video(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+    elif media_url and media_url.lower().endswith((".jpeg", ".jpg", ".png")):
+        bot.send_photo(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+    else:
+        bot.send_message(chat_id, mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+
+def criar_marcacao_navegacao(current_index, total_count, nome_pesquisa):
+    markup = types.InlineKeyboardMarkup()
+    prev_button_text = "⬅"
+    next_button_text = "➡️"
+    prev_button_callback = f"navigate_{current_index}_prev_{nome_pesquisa}"
+    next_button_callback = f"navigate_{current_index}_next_{nome_pesquisa}"
+
+    buttons = [
+        types.InlineKeyboardButton(text=prev_button_text, callback_data=prev_button_callback),
+        types.InlineKeyboardButton(text=next_button_text, callback_data=next_button_callback)
+    ]
+    markup.add(*buttons)
+    return markup
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('navigate'))
+def navigate_messages(call):
+    try:
+        chat_id = call.message.chat.id
+        data_parts = call.data.split('_')
+
+        if len(data_parts) == 4:
+            direction = data_parts[2]
+            current_index = int(data_parts[1])
+            nome_pesquisa = data_parts[3]
+        else:
+            raise ValueError("Callback_data com número incorreto de partes ou formato inválido.")
+
+        mensagens = user_messages.get(f"{chat_id}_{nome_pesquisa}", [])
+        total_count = len(mensagens)
+
+        if direction == 'next':
+            current_index = (current_index + 1) % total_count
+        elif direction == 'prev':
+            current_index = (current_index - 1 + total_count) % total_count
+
+        media_url, mensagem = mensagens[current_index]
+        markup = criar_marcacao_navegacao(current_index, total_count, nome_pesquisa)
+
+        if media_url and media_url.lower().endswith(".gif"):
+            bot.edit_message_media(chat_id=chat_id, message_id=call.message.message_id, media=types.InputMediaAnimation(media_url, caption=mensagem, parse_mode="HTML"), reply_markup=markup)
+        elif media_url and media_url.lower().endswith(".mp4"):
+            bot.edit_message_media(chat_id=chat_id, message_id=call.message.message_id, media=types.InputMediaVideo(media_url, caption=mensagem), reply_markup=markup)
+        elif media_url and media_url.lower().endswith((".jpeg", ".jpg", ".png")):
+            bot.edit_message_media(chat_id=chat_id, message_id=call.message.message_id, media=types.InputMediaPhoto(media_url, caption=mensagem, parse_mode="HTML"), reply_markup=markup)
+        else:
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=mensagem, reply_markup=markup, parse_mode="HTML")
+
+    except Exception as e:
+        print("Erro ao processar callback dos botões de navegação:", str(e))
+
+# Função para lidar com o comando /gnomes
+@bot.message_handler(commands=['gnomes'])
+def gnomes(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(processar_comando_gnomes, chat_id, user_id, message)
+        future.result()
+
+def processar_comando_gnomes(chat_id, user_id, message):
+    conn, cursor = conectar_banco_dados()
+    try:
+        nome = message.text.split('/gnomes', 1)[1].strip()
+
+        if nome.startswith("e "):
+            nome_evento = nome[1:].strip()
+            sql_eventos_exatas = """
+                SELECT
+                    e.id_personagem,
+                    e.nome,
+                    e.subcategoria,
+                    e.categoria,
+                    NULL AS quantidade_usuario,
+                    e.imagem
+                FROM evento e
+                WHERE e.nome = %s
+            """
+            sql_eventos_parciais = """
+                SELECT
+                    e.id_personagem,
+                    e.nome,
+                    e.subcategoria,
+                    e.categoria,
+                    NULL AS quantidade_usuario,
+                    e.imagem
+                FROM evento e
+                WHERE e.nome LIKE %s AND e.nome <> %s
+            """
+            values_eventos_exatas = (nome_evento,)
+            values_eventos_parciais = (f"%{nome_evento}%", nome_evento)
+
+            cursor.execute(sql_eventos_exatas, values_eventos_exatas)
+            resultados_exatos = cursor.fetchall()
+
+            cursor.execute(sql_eventos_parciais, values_eventos_parciais)
+            resultados_parciais = cursor.fetchall()
+
+            resultados_personagens = resultados_exatos + resultados_parciais
+        else:
+            sql_personagens_exatas = """
+                SELECT
+                    p.id_personagem,
+                    p.nome,
+                    p.subcategoria,
+                    p.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    p.imagem,
+                    p.emoji
+                FROM personagens p
+                LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE p.nome = %s
+            """
+            sql_personagens_parciais = """
+                SELECT
+                    p.id_personagem,
+                    p.nome,
+                    p.subcategoria,
+                    p.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    p.imagem,
+                    p.emoji
+                FROM personagens p
+                LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE p.nome LIKE %s AND p.nome <> %s
+            """
+            values_personagens_exatas = (user_id, nome)
+            values_personagens_parciais = (user_id, f"%{nome}%", nome)
+
+            cursor.execute(sql_personagens_exatas, values_personagens_exatas)
+            resultados_exatos = cursor.fetchall()
+
+            cursor.execute(sql_personagens_parciais, values_personagens_parciais)
+            resultados_parciais = cursor.fetchall()
+
+            resultados_personagens = resultados_exatos + resultados_parciais
+
+        if len(resultados_personagens) == 0:
+            bot.send_message(chat_id, "Nenhum personagem encontrado.", reply_to_message_id=message.message_id)
+            return
+
+        total_paginas = (len(resultados_personagens) + 14) // 15
+        user_messages[f"{chat_id}_{nome}"] = {
+            'mensagens': resultados_personagens,
+            'total_paginas': total_paginas
+        }
+
+        enviar_pagina_gnomes(chat_id, resultados_personagens, 1, total_paginas, nome)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+    finally:
+        cursor.close()
+        conn.close()
+
+def enviar_pagina_gnomes(chat_id, mensagens, pagina_atual, total_paginas, nome_pesquisa, reply_to_message_id=None):
+    total_count = len(mensagens)
+    offset = (pagina_atual - 1) * 15
+    mensagens_pagina = mensagens[offset:offset + 15]
+
+    resposta = f"🐠 Peixes de nome '{nome_pesquisa}', página {pagina_atual}/{total_paginas}:\n\n"
+    for msg in mensagens_pagina:
+        id_personagem, nome, subcategoria, categoria, quantidade_usuario, imagem_url, emoji = msg
+        resposta += f"{emoji} {id_personagem} • {nome}\nde {subcategoria}\n"
+
+    markup = criar_marcacao_navegacao_gnomes(pagina_atual, total_paginas, nome_pesquisa)
+
+    if reply_to_message_id:
+        bot.edit_message_text(resposta, chat_id=chat_id, message_id=reply_to_message_id, reply_markup=markup, parse_mode="HTML")
+    else:
+        bot.send_message(chat_id, resposta, reply_markup=markup, parse_mode="HTML")
+
+def criar_marcacao_navegacao_gnomes(pagina_atual, total_paginas, nome_pesquisa):
+    markup = types.InlineKeyboardMarkup()
+    prev_button_text = "⬅"
+    next_button_text = "➡️"
+    prev_button_callback = f"gnomes_{pagina_atual}_prev_{nome_pesquisa}"
+    next_button_callback = f"gnomes_{pagina_atual}_next_{nome_pesquisa}"
+
+    buttons = []
+    if pagina_atual > 1:
+        buttons.append(types.InlineKeyboardButton(text=prev_button_text, callback_data=prev_button_callback))
+    if pagina_atual < total_paginas:
+        buttons.append(types.InlineKeyboardButton(text=next_button_text, callback_data=next_button_callback))
+
+    markup.add(*buttons)
+    return markup
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('gnomes'))
+def navigate_gnomes(call):
+    try:
+        chat_id = call.message.chat.id
+        data_parts = call.data.split('_')
+
+        if len(data_parts) == 4:
+            direction = data_parts[2]
+            pagina_atual = int(data_parts[1])
+            nome_pesquisa = data_parts[3]
+        else:
+            raise ValueError("Callback_data com número incorreto de partes ou formato inválido.")
+
+        mensagens_data = user_messages.get(f"{chat_id}_{nome_pesquisa}", {})
+        mensagens = mensagens_data.get('mensagens', [])
+        total_paginas = mensagens_data.get('total_paginas', 1)
+
+        if direction == 'next':
+            pagina_atual = (pagina_atual % total_paginas) + 1
+        elif direction == 'prev':
+            pagina_atual = (pagina_atual - 2 + total_paginas) % total_paginas + 1
+
+        enviar_pagina_gnomes(chat_id, mensagens, pagina_atual, total_paginas, nome_pesquisa, reply_to_message_id=call.message.message_id)
+
+    except Exception as e:
+        print("Erro ao processar callback dos botões de navegação:", str(e))
+
+
 bot.polling()
