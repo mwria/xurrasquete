@@ -1,0 +1,2013 @@
+@bot.message_handler(commands=['help'])
+def help_command(message):
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.row(
+        telebot.types.InlineKeyboardButton("Cartas", callback_data="help_cartas"),
+        telebot.types.InlineKeyboardButton("Trocas", callback_data="help_trocas")
+    )
+    markup.row(
+        telebot.types.InlineKeyboardButton("Eventos", callback_data="help_eventos"),
+        telebot.types.InlineKeyboardButton("Usuário", callback_data="help_bugs")
+    )
+    markup.row(
+        telebot.types.InlineKeyboardButton("Outros", callback_data="help_tudo"),
+        telebot.types.InlineKeyboardButton("Sobre o Beta", callback_data="help_beta")
+    )
+    
+    markup.row(
+        telebot.types.InlineKeyboardButton("⚠️ IMPORTANTE! ⚠️", callback_data="help_imp")
+    )
+    
+    
+    bot.send_message(message.chat.id, "Selecione uma categoria para obter ajuda:", reply_markup=markup)
+@bot.message_handler(content_types=['new_chat_members'])
+def verifica_novo_membro(message):
+    chat_id = message.chat.id
+    if chat_id in bloqueados:
+        bot.send_message(chat_id, "O bot não pode ser usado em grupos privados.")
+        registrar_grupo(chat_id, message.chat.title)
+        bot.leave_chat(chat_id)
+
+@bot.message_handler(commands=['iduser'])
+def handle_iduser_command(message):
+    if message.reply_to_message:
+        idusuario = message.reply_to_message.from_user.id
+        bot.send_message(chat_id=message.chat.id, text=f"O ID do usuário é <code>{idusuario}</code>", reply_to_message_id=message.message_id,parse_mode="HTML")
+# Função para fazer o bot sair de um grupo pelo ID do grupo
+@bot.message_handler(commands=['sair'])
+def sair_grupo(message):
+    try:
+        # Extrair o ID do grupo fornecido
+        id_grupo = message.text.split(' ', 1)[1]
+
+        # Fazer o bot sair do grupo
+        bot.leave_chat(id_grupo)
+
+        # Mensagem de confirmação
+        bot.reply_to(message, f"O bot saiu do grupo com ID {id_grupo}.")
+
+    except IndexError:
+        bot.reply_to(message, "Por favor, forneça o ID do grupo após o comando, por exemplo: /sair 123456789.")
+
+    except Exception as e:
+        print(f"Erro ao processar comando /sair: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+
+@bot.message_handler(commands=['supergroupid'])
+def supergroup_id_command(message):
+    chat_id = message.chat.id
+    chat_type = message.chat.type
+
+    if chat_type == 'supergroup':
+        chat_info = bot.get_chat(chat_id)
+        bot.send_message(chat_id, f"O ID deste supergrupo é: <code>{chat_info.id}</code>", reply_to_message_id=message.message_id,parse_mode="HTML")
+    else:
+        bot.send_message(chat_id, "Este chat não é um supergrupo.")
+
+@bot.message_handler(commands=['idchat'])
+def handle_idchat_command(message):
+    chat_id = message.chat.id
+    bot.send_message(chat_id, f"O ID deste chat é<code>{chat_id}</code>", reply_to_message_id=message.message_id,parse_mode="HTML")
+
+def verificar_valor_existente(coluna, valor):
+    try:
+        conn, cursor = conectar_banco_dados()
+        query = f"SELECT * FROM usuarios WHERE {coluna} = %s"
+        cursor.execute(query, (valor,))
+        resultado = cursor.fetchone()
+
+        return resultado is not None
+
+    except mysql.connector.Error as err:
+        print(f"Erro ao verificar {coluna}: {err}")
+
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['setuser'])
+def setuser_comando(message):
+    command_parts = message.text.split()
+    if len(command_parts) != 2:
+        bot.send_message(message.chat.id, "Formato incorreto. Use /setuser seguido do user desejado, por exemplo: /setuser novouser.", reply_to_message_id=message.message_id)
+        return
+
+    nome_usuario = command_parts[1].strip()
+
+
+    # Verificar se o nome de usuário contém apenas caracteres permitidos e não ultrapassa 20 caracteres
+    if not re.match("^[a-zA-Z0-9_]{1,20}$", nome_usuario):
+        bot.send_message(message.chat.id, "Nome de usuário inválido. Use apenas letras, números e '_' e não ultrapasse 20 caracteres.", reply_to_message_id=message.message_id)
+        return
+
+    try:
+        conn, cursor = conectar_banco_dados()
+
+        # Verificar se o nome de usuário já está em uso
+        cursor.execute("SELECT 1 FROM usuarios WHERE user = %s", (nome_usuario,))
+        if cursor.fetchone():
+            bot.send_message(message.chat.id, "O nome de usuário já está em uso. Escolha outro nome de usuário.", reply_to_message_id=message.message_id)
+            return
+        # Verificar se o nome de usuário já está banido
+        cursor.execute("SELECT 1 FROM usuarios_banidos WHERE id_usuario = %s", (nome_usuario,))
+        if cursor.fetchone():
+            bot.send_message(message.chat.id, "O nome de usuário já está em uso. Escolha outro nome de usuário.", reply_to_message_id=message.message_id)
+            return
+        # Atualizar o nome de usuário na tabela 'usuarios'
+        cursor.execute("UPDATE usuarios SET user = %s WHERE id_usuario = %s", (nome_usuario, message.from_user.id))
+        conn.commit()
+
+        bot.send_message(message.chat.id, f"O nome de usuário foi alterado para '{nome_usuario}'.", reply_to_message_id=message.message_id)
+
+    except mysql.connector.Error as err:
+        bot.send_message(message.chat.id, f"Erro ao processar comando /setuser: {err}", reply_to_message_id=message.message_id)
+
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['start'])
+def start_comando(message):
+    user_id = message.from_user.id
+    nome_usuario = message.from_user.first_name  
+    username = message.chat.username
+    print(f"Comando /start recebido. ID do usuário: {user_id} - {nome_usuario}")
+
+    try:
+        verificar_id_na_tabela(user_id, "ban", "iduser")
+        print("novo /start ",{user_id},"-",{nome_usuario},"-",{username})
+
+        if verificar_id_na_tabelabeta(message.from_user.id):
+            registrar_usuario(user_id, nome_usuario, username)
+            registrar_valor("nome_usuario", nome_usuario, user_id)
+            keyboard = telebot.types.InlineKeyboardMarkup()
+            image_path = "jungk.jpg"
+            with open(image_path, 'rb') as photo:
+                bot.send_photo(message.chat.id, photo,
+                               caption='Seja muito bem-vindo ao MabiGarden! Entre, busque uma sombra e aproveite a estadia.',
+                               reply_markup=keyboard, reply_to_message_id=message.message_id)
+        else:
+            bot.send_message(message.chat.id, "Ei visitante, você não foi convidado! 😡", reply_to_message_id=message.message_id)
+
+    except ValueError as e:
+        print(f"Erro: {e}")
+        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
+        bot.send_message(message.chat.id, mensagem_banido, reply_to_message_id=message.message_id)
+        
+@bot.message_handler(commands=['removefav'])
+def remove_fav_command(message):
+    id_usuario = message.from_user.id
+
+    # Defina a coluna 'fav' como NULL para o usuário atual
+    conn, cursor = conectar_banco_dados()
+    cursor.execute("UPDATE usuarios SET fav = NULL WHERE id_usuario = %s", (id_usuario,))
+    conn.commit()
+
+    bot.send_message(message.chat.id, "Favorito removido com sucesso.", reply_to_message_id=message.message_id)
+
+           
+@bot.message_handler(commands=['setfav'])
+def set_fav_command(message):
+
+    command_parts = message.text.split(maxsplit=1)
+    if len(command_parts) == 2 and command_parts[1].isdigit():
+        id_personagem = int(command_parts[1])
+        print(id_personagem)
+        id_usuario = message.from_user.id
+        nome_personagem = obter_nome(id_personagem)
+        print(nome_personagem)
+        qtd_cartas = buscar_cartas_usuario(id_usuario, id_personagem)
+
+        if qtd_cartas > 0:
+            atualizar_coluna_usuario(id_usuario, 'fav', id_personagem)
+            bot.send_message(message.chat.id, f"❤ {id_personagem} — {nome_personagem} definido como favorito.", reply_to_message_id=message.message_id)
+        else:
+            bot.send_message(message.chat.id, f"Você não possui {id_personagem} no seu inventário, que tal ir pescar?", reply_to_message_id=message.message_id)
+
+
+@bot.message_handler(commands=['setnome'])
+def set_nome_command(message):
+
+    command_parts = message.text.split(maxsplit=1)
+
+    if len(command_parts) == 2:
+        novo_nome = command_parts[1]
+        id_usuario = message.from_user.id
+        atualizar_coluna_usuario(id_usuario, 'nome', novo_nome)
+        bot.send_message(message.chat.id, f"Nome atualizado para: {novo_nome}", reply_to_message_id=message.message_id)
+    else:
+        bot.send_message(message.chat.id,
+                         "Formato incorreto. Use /setnome seguido do novo nome, por exemplo: /setnome Manoela Gavassi", reply_to_message_id=message.message_id)
+
+@bot.message_handler(commands=['usuario'])
+def obter_username_por_comando(message):
+    if len(message.text.split()) == 2 and message.text.split()[1].isdigit():
+        user_id = int(message.text.split()[1])
+        username = obter_username_por_id(user_id)
+        bot.reply_to(message, username)
+    else:
+        bot.reply_to(message, "Formato incorreto. Use /usuario seguido do ID desejado, por exemplo: /usuario 123")
+
+@bot.message_handler(commands=['eu'])
+def me_command(message):
+    id_usuario = message.from_user.id   
+    query_verificar_usuario = "SELECT COUNT(*) FROM usuarios WHERE id_usuario = %s"
+
+    try:
+        conn, cursor = conectar_banco_dados()
+        cursor.execute(query_verificar_usuario, (id_usuario,))
+        usuario_existe = cursor.fetchone()[0]  # Extrair o resultado da contagem
+
+        if usuario_existe > 0:  # Verificar se há pelo menos um usuário com o ID fornecido
+            qnt_carta(id_usuario)
+            query_obter_perfil = """
+                SELECT 
+                    u.nome, u.nome_usuario, u.fav, u.adm, u.qntcartas, u.cenouras, u.iscas, u.bio, u.musica, u.pronome, u.privado, u.user, u.beta,
+                    COALESCE(p.nome, e.nome) AS nome_fav, 
+                    COALESCE(p.imagem, e.imagem) AS imagem_fav
+                FROM usuarios u
+                LEFT JOIN personagens p ON u.fav = p.id_personagem
+                LEFT JOIN evento e ON u.fav = e.id_personagem
+                WHERE u.id_usuario = %s
+            """
+            cursor.execute(query_obter_perfil, (id_usuario,))
+            
+            perfil = cursor.fetchone()
+
+            if perfil:
+                nome, nome_usuario, fav, adm, qntcartas, cenouras, iscas, bio, musica, pronome, privado, user, beta, nome_fav, imagem_fav = perfil
+
+                resposta = f"<b>Perfil de {nome}</b>\n\n" \
+                        f"✨ Fav: {fav} — {nome_fav}\n\n"
+                if user == "midnightsun":
+                    resposta += f"⭐️ Fã nº1 do Mabi Garden\n\n"
+                if adm:
+                    resposta += f"🌈 Adm: {adm.capitalize()}\n\n"
+                if beta:
+                    resposta += f"🍀 Usuario Beta\n\n" # Adiciona essa linha se o usuário for beta
+                resposta += f"‍🧑‍🌾 Camponês: {user}\n" \
+                            f"🐟 Peixes: {qntcartas}\n" \
+                            f"🥕 Cenouras: {cenouras}\n" \
+                            f"🪝 Iscas: {iscas}\n"
+
+                if pronome:
+                    resposta += f"🌺 Pronomes: {pronome}\n\n"
+
+                resposta += f"✍ {bio}\n\n" \
+                            f"🎧: {musica}"
+
+                enviar_perfil(message.chat.id, resposta, imagem_fav, fav, id_usuario,message)
+            else:
+                bot.send_message(message.chat.id, "Perfil não encontrado.", reply_to_message_id=message.message_id)
+        else:
+            bot.send_message(message.chat.id, "Você ainda não iniciou o bot. Use /start para começar.", reply_to_message_id=message.message_id)
+
+    except mysql.connector.Error as err:
+        bot.send_message(message.chat.id, f"Erro ao verificar perfil: {err}", reply_to_message_id=message.message_id)
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['variações'])
+def verificar_comando_submenus(message):
+    try:
+        parametros = message.text.split(' ', 1)[1:]
+
+        if not parametros:
+            bot.reply_to(message, "Por favor, forneça a subcategoria.")
+            return
+
+        subcategoria = parametros[0] 
+
+        mostrar_primeira_pagina_submenus(message, subcategoria)
+
+    except Exception as e:
+        print(f"Erro ao processar comando /submenus: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+        
+@bot.message_handler(commands=['gperfil'])
+def gperfil_command(message):
+
+    if len(message.text.split()) != 2:
+        bot.send_message(message.chat.id, "Formato incorreto. Use /gperfil seguido do nome de usuário desejado.")
+        return
+
+    username = message.text.split()[1].strip()
+
+    try:
+        conn, cursor = conectar_banco_dados()
+
+        query_verificar_usuario = "SELECT 1 FROM usuarios WHERE user = %s"
+        cursor.execute(query_verificar_usuario, (username,))
+        usuario_existe = cursor.fetchone()
+
+        if usuario_existe:
+
+            query_obter_perfil = """
+                SELECT 
+                    u.nome, u.nome_usuario, u.fav, u.adm, u.qntcartas, u.cenouras, u.iscas, u.bio, u.musica, u.pronome, u.privado, u.beta,
+                    COALESCE(p.nome, e.nome) AS nome_fav, 
+                    COALESCE(p.imagem, e.imagem) AS imagem_fav
+                FROM usuarios u
+                LEFT JOIN personagens p ON u.fav = p.id_personagem
+                LEFT JOIN evento e ON u.fav = e.id_personagem
+                WHERE u.user = %s
+            """
+            cursor.execute(query_obter_perfil, (username,))
+            perfil = cursor.fetchone()
+
+            if perfil:
+                nome, nome_usuario, fav, adm, qntcartas, cenouras, iscas, bio, musica, pronome, privado, beta, nome_fav, imagem_fav = perfil
+
+
+                if beta == 1:
+                    usuario_beta = True
+                else:
+                    usuario_beta = False
+                if privado == 1:
+                    resposta = f"<b>Perfil de {username}</b>\n\n" \
+                               f"✨ Fav: {fav} — {nome_fav}\n\n"
+                    if usuario_beta:
+                        resposta += f"🍀 Usuario Beta\n\n"         
+                    if adm:
+                        resposta += f"🌈 Adm: {adm.capitalize()}\n\n"
+                    if pronome:
+                        resposta += f"🌺 Pronomes: {pronome.capitalize()}\n\n" 
+                          
+                    resposta += f"🔒 Perfil Privado"
+                else:
+                    resposta = f"<b>Perfil de {nome_usuario}</b>\n\n" \
+                               f"✨ Fav: {fav} — {nome_fav}\n\n" \
+                      
+                    if usuario_beta:
+                        resposta += f"🍀 <b>Usuario Beta</b>\n\n" 
+                    if adm:
+                        resposta += f"🌈 Adm: {adm.capitalize()}\n\n"
+                    if pronome:
+                        resposta += f"🌺 Pronomes: {pronome.capitalize()}\n\n" \
+ 
+                    
+                    resposta += f"‍🧑‍🌾 Camponês: {nome}\n" \
+                                f"🐟 Peixes: {qntcartas}\n" \
+                                f"🥕 Cenouras: {cenouras}\n" \
+                                f"🪝 Iscas: {iscas}\n" \
+                                f"✍ {bio}\n\n" \
+                                f"🎧: {musica}"
+
+                enviar_perfil(message.chat.id, resposta, imagem_fav, fav, message.from_user.id,message)
+            else:
+                bot.send_message(message.chat.id, "Perfil não encontrado.")
+        else:
+            bot.send_message(message.chat.id, "O nome de usuário especificado não está registrado.")
+
+    except mysql.connector.Error as err:
+        bot.send_message(message.chat.id, f"Erro ao verificar o perfil: {err}")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['config'])
+def handle_config(message):
+    markup = types.InlineKeyboardMarkup()
+    btn1 = types.InlineKeyboardButton('Pronomes', callback_data='bpronomes_')
+    btn2 = types.InlineKeyboardButton('Privacidade', callback_data='privacy')
+    btn_cancelar = types.InlineKeyboardButton('❌ Cancelar', callback_data='pcancelar')
+    markup.add(btn1, btn2)
+    markup.add(btn_cancelar)
+    bot.send_message(message.chat.id, "Escolha uma opção:", reply_markup=markup)
+
+@bot.message_handler(commands=['gnome'])
+def gnome(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    conn, cursor = conectar_banco_dados()
+    idmens = message.message_id
+    try:
+        nome = message.text.split('/gnome', 1)[1].strip()
+        sql_personagens = """
+            SELECT
+                p.id_personagem,
+                p.nome,
+                p.subcategoria,
+                p.categoria,
+                i.quantidade AS quantidade_usuario,
+                p.imagem
+            FROM personagens p
+            LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+            WHERE p.nome LIKE %s
+        """
+        values_personagens = (user_id, f"%{nome}%")
+
+        cursor.execute(sql_personagens, values_personagens)
+        resultados_personagens = cursor.fetchall()
+        
+        if len(resultados_personagens) == 1:
+
+            mensagem = resultados_personagens[0]
+            id_personagem, nome, subcategoria, categoria, quantidade_usuario, imagem_url = mensagem
+
+            mensagem = f"💌 | Personagem: \n\n<code>{id_personagem}</code> • {nome}\nde {subcategoria}"
+            if quantidade_usuario is None:
+                mensagem += f"\n\n🌧 | Tempo fechado..."
+            elif quantidade_usuario > 0:
+                mensagem += f"\n\n☀ | {quantidade_usuario}⤫"
+            else:
+                mensagem += f"\n\n🌧 | Tempo fechado..."
+
+            gif_url = obter_gif_url(id_personagem, user_id)
+
+            if gif_url:
+                imagem_url = gif_url
+                if imagem_url.lower().endswith(".gif"):
+                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                elif imagem_url.lower().endswith(".mp4"):
+                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                elif imagem_url.lower().endswith((".jpeg", ".jpg", ".png")):
+                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                else:
+                    send_message_with_buttons(chat_id, idmens, [(None, mensagem)], reply_to_message_id=message.message_id)
+            else:
+                if  imagem_url.lower().endswith(".gif"):
+                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                elif imagem_url.lower().endswith(".mp4"):
+                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                elif imagem_url.lower().endswith((".jpeg", ".jpg", ".png")):
+                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                else:
+                    send_message_with_buttons(chat_id, idmens, [(None, mensagem)], reply_to_message_id=message.message_id)
+                
+            user_id = chat_id
+            save_user_state(user_id, 'gnomes', mensagem, chat_id)
+
+        else:
+            # Se houver mais de um resultado, envie a mensagem com botões
+            mensagens = []
+            for resultado_personagem in resultados_personagens:
+                id_personagem, nome, subcategoria, categoria, quantidade_usuario, imagem_url = resultado_personagem
+                mensagem = f"💌 | Personagem: \n\n<code>{id_personagem}</code> • {nome}\nde {subcategoria}"
+                if quantidade_usuario is None:
+                    mensagem += f"\n\n🌧 | Tempo fechado..."
+                elif quantidade_usuario > 0:
+                    mensagem += f"\n\n☀ | {quantidade_usuario}⤫"
+                else:
+                    mensagem += f"\n\n🌧 | Tempo fechado..."
+
+                gif_url = obter_gif_url(id_personagem, user_id)
+                if gif_url:
+                    mensagens.append((gif_url, mensagem))
+                elif imagem_url:
+                    mensagens.append((imagem_url, mensagem))
+                else:
+                    mensagens.append((None, mensagem))
+
+            save_user_state(user_id, 'gnomes', mensagens, chat_id)
+            send_message_with_buttons(chat_id, idmens, mensagens, reply_to_message_id=message.message_id)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['gnomes'])
+def gnome(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    conn, cursor = conectar_banco_dados()
+
+    try:
+        nome = message.text.split('/gnomes', 1)[1].strip()
+        if len(nome) <= 2:
+            bot.send_message(chat_id, "Por favor, forneça um nome com mais de 3 letras.", reply_to_message_id=message.message_id)
+            return
+        sql_personagens = """
+            SELECT
+                p.emoji,
+                p.id_personagem,
+                p.nome,
+                p.subcategoria
+            FROM personagens p
+            WHERE p.nome LIKE %s
+        """
+        values_personagens = (f"%{nome}%",)
+        pesquisa = nome
+        cursor.execute(sql_personagens, values_personagens)
+        resultados_personagens = cursor.fetchall()
+
+        if resultados_personagens:
+            total_resultados = len(resultados_personagens)
+            resultados_por_pagina = 15
+            total_paginas = -(-total_resultados // resultados_por_pagina) 
+            pagina_solicitada = 1
+
+            if total_resultados > resultados_por_pagina:
+                if len(message.text.split()) == 3 and message.text.split()[2].isdigit():
+                    pagina_solicitada = min(int(message.text.split()[2]), total_paginas)
+                resultados_pagina_atual = resultados_personagens[(pagina_solicitada - 1) * resultados_por_pagina : pagina_solicitada * resultados_por_pagina]
+                lista_resultados = [F"{emoji} <code>{id_personagem}</code> • {nome}\nde {subcategoria}"  for emoji, id_personagem, nome, subcategoria in resultados_pagina_atual]
+
+                mensagem_final = f"🐠 Peixes de nome', página {pagina_solicitada}/{total_paginas}:\n\n" + "\n".join(lista_resultados)
+                markup = create_navigation_markup(pagina_solicitada, total_paginas)
+                message = bot.send_message(chat_id, mensagem_final, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                
+                save_state(user_id, 'gnomes', resultados_personagens, chat_id, message.message_id)
+            else:
+                lista_resultados = [f"{emoji} <code>{id_personagem}</code> • {nome}\nde {subcategoria}" for emoji, id_personagem, nome, subcategoria in resultados_personagens]
+
+                mensagem_final = f"🐠 Peixes de nome '{pesquisa}':\n\n" + "\n".join(lista_resultados)
+                bot.send_message(chat_id, mensagem_final, reply_to_message_id=message.message_id,parse_mode='HTML')
+
+        else:
+            bot.send_message(chat_id, f"Nenhum resultado encontrado para o nome '{nome}'.", reply_to_message_id=message.message_id)
+    finally:
+        fechar_conexao(cursor, conn)          
+
+@bot.message_handler(commands=['gid'])
+def obter_id_e_enviar_info_com_imagem(message):
+    conn, cursor = conectar_banco_dados()
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+
+    command_parts = message.text.split()
+    if len(command_parts) == 2 and command_parts[1].isdigit():
+        id_pesquisa = command_parts[1]
+
+        is_evento = verificar_evento(cursor, id_pesquisa)
+
+        if is_evento:
+            sql_evento = """
+                SELECT
+                    e.id_personagem,
+                    e.nome,
+                    e.subcategoria,
+                    e.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    e.imagem
+                FROM evento e
+                LEFT JOIN inventario i ON e.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE e.id_personagem = %s
+            """
+            values_evento = (message.from_user.id, id_pesquisa)
+
+            cursor.execute(sql_evento, values_evento)
+            resultado_evento = cursor.fetchone()
+
+            if resultado_evento:
+                id_personagem, nome, subcategoria, categoria, quantidade_usuario, imagem_url = resultado_evento
+
+                mensagem = f"💌 | Personagem: \n\n{id_personagem} • {nome}\nde {subcategoria}"
+
+                if quantidade_usuario == None:
+                    mensagem += f"\n\n🌧 | Tempo fechado..."
+                elif quantidade_usuario == 1:
+                    mensagem += f"\n\n{'☀  '}"
+                else:
+                    mensagem += f"\n\n{'☀ 𖡩'}"
+
+                try:
+                    if imagem_url.lower().endswith(('.jpg', '.jpeg', '.png')):
+                        bot.send_photo(chat_id=message.chat.id, photo=imagem_url, caption=mensagem, reply_to_message_id=message.message_id)
+                    elif imagem_url.lower().endswith(('.mp4', '.gif')):
+                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_to_message_id=message.message_id)
+                except Exception as e:
+                    bot.send_message(chat_id, mensagem, reply_to_message_id=message.message_id)
+            else:
+                bot.send_message(chat_id, f"Nenhum resultado encontrado para o ID '{id_pesquisa}'.", reply_to_message_id=message.message_id)
+
+        else:
+            sql_normal = """
+                SELECT
+                    p.id_personagem,
+                    p.nome,
+                    p.subcategoria,
+                    p.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    p.imagem,
+                    p.cr
+                FROM personagens p
+                LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE p.id_personagem = %s
+            """
+            values_normal = (message.from_user.id, id_pesquisa)
+
+            cursor.execute(sql_normal, values_normal)
+            resultado_normal = cursor.fetchone()
+
+            if resultado_normal:
+                id_personagem, nome, subcategoria, categoria, quantidade_usuario, imagem_url, cr = resultado_normal
+
+                mensagem = f"💌 | Personagem: \n\n{id_personagem} • {nome}\nde {subcategoria}"
+
+                if quantidade_usuario is not None and quantidade_usuario > 0:
+                    mensagem += f"\n\n☀ | {quantidade_usuario}⤫"
+                else:
+                    mensagem += f"\n\n🌧 | Tempo fechado..."
+
+                if cr:
+                    link_cr = obter_link_formatado(cr)
+                    mensagem += f"\n\n{link_cr}"
+
+                markup = InlineKeyboardMarkup()
+                markup.row_width = 1
+                markup.add(InlineKeyboardButton("💟", callback_data=f"total_{id_pesquisa}"))
+
+                gif_url = obter_gif_url(id_personagem, user_id)
+                if gif_url:
+                    imagem_url = gif_url
+                    if  imagem_url.lower().endswith(".gif"):
+                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                    elif imagem_url.lower().endswith(".mp4"):
+                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                    elif imagem_url.lower().endswith((".jpeg", ".jpg", ".png")):
+                        bot.send_photo(chat_id=message.chat.id, photo=imagem_url, caption=mensagem, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                    else:
+                        bot.send_message(chat_id, mensagem)
+                else:
+                    if  imagem_url.lower().endswith(".gif"):
+                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                    elif imagem_url.lower().endswith(".mp4"):
+                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                    elif imagem_url.lower().endswith((".jpeg", ".jpg", ".png")):
+                        bot.send_photo(chat_id=message.chat.id, photo=imagem_url, caption=mensagem, reply_markup=markup, reply_to_message_id=message.message_id,parse_mode="HTML")
+                    else:
+                        bot.send_message(chat_id, mensagem) 
+            else:
+                bot.send_message(chat_id, f"Nenhum resultado encontrado para o ID '{id_pesquisa}'.", reply_to_message_id=message.message_id)
+    else:
+        bot.send_message(chat_id, "Formato incorreto. Use /gid seguido do ID desejado, por exemplo: /gid 123", reply_to_message_id=message.message_id)
+
+  @bot.message_handler(commands=['cesta'])
+def verificar_cesta(message):
+    try:
+        parts = message.text.split(' ', 2)
+        if len(parts) < 3:
+            bot.reply_to(message, "Por favor, forneça o tipo ('s', 'f', 'c', 'se', 'fe' ou 'cf') e a subcategoria após o comando, por exemplo: /cesta s bts")
+            return
+
+        tipo = parts[1].strip()
+        subcategoria = parts[2].strip()
+
+        id_usuario = message.from_user.id
+        nome_usuario = message.from_user.first_name
+
+        if tipo in ['s', 'se']:
+            subcategoria_proxima = encontrar_subcategoria_proxima(subcategoria)
+            if not subcategoria_proxima:
+                bot.reply_to(message, "Espécie não identificada. Você digitou certo? 🤭")
+                return
+
+            ids_personagens = obter_ids_personagens_inventario(id_usuario, subcategoria_proxima)
+            if 'e' in tipo:
+                ids_personagens += obter_ids_personagens_evento(id_usuario, subcategoria_proxima, incluir=False)
+            total_personagens_subcategoria = obter_total_personagens_subcategoria(subcategoria_proxima)
+            total_registros = len(ids_personagens)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_s(message, subcategoria_proxima, id_usuario, 1, total_paginas, ids_personagens, total_personagens_subcategoria, nome_usuario)
+            else:
+                bot.reply_to(message, f"🌧️ Sem peixes de {subcategoria_proxima} na cesta... a jornada continua.")
+
+        elif tipo in ['f', 'fe']:
+            subcategoria_proxima = encontrar_subcategoria_proxima(subcategoria)
+            if not subcategoria_proxima:
+                bot.reply_to(message, "Espécie não identificada. Você digitou certo? 🤭")
+                return
+
+            ids_personagens_faltantes = obter_ids_personagens_faltantes(id_usuario, subcategoria_proxima)
+            if 'e' in tipo:
+                ids_personagens_faltantes += obter_ids_personagens_evento(id_usuario, subcategoria_proxima, incluir=True)
+            total_personagens_subcategoria = obter_total_personagens_subcategoria(subcategoria_proxima)
+            total_registros = len(ids_personagens_faltantes)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_f(message, subcategoria_proxima, id_usuario, 1, total_paginas, ids_personagens_faltantes, total_personagens_subcategoria, nome_usuario)
+            else:
+                bot.reply_to(message, f"☀️ Nada como a alegria de ter todos os peixes de {subcategoria_proxima} na cesta!")
+
+        elif tipo == 'c':
+            subcategoria_proxima = encontrar_categoria_proxima(subcategoria)
+            if not subcategoria_proxima:
+                bot.reply_to(message, "Espécie não identificada. Você digitou certo? 🤭")
+                return
+
+            ids_personagens = obter_ids_personagens_categoria(id_usuario, subcategoria_proxima)
+            total_personagens_categoria = obter_total_personagens_categoria(subcategoria_proxima)
+            total_registros = len(ids_personagens)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_c(message, subcategoria_proxima, id_usuario, 1, total_paginas, ids_personagens, total_personagens_categoria, nome_usuario)
+            else:
+                bot.reply_to(message, f"🌧️ Sem peixes de {subcategoria_proxima} na cesta... a jornada continua.")
+
+        elif tipo == 'cf':
+            subcategoria_proxima = encontrar_categoria_proxima(subcategoria)
+            if not subcategoria_proxima:
+                bot.reply_to(message, "Espécie não identificada. Você digitou certo? 🤭")
+                return
+
+            ids_personagens_faltantes = obter_ids_personagens_faltantes_categoria(id_usuario, subcategoria_proxima)
+            total_personagens_categoria = obter_total_personagens_categoria(subcategoria_proxima)
+            total_registros = len(ids_personagens_faltantes)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_cf(message, subcategoria_proxima, id_usuario, 1, total_paginas, ids_personagens_faltantes, total_personagens_categoria, nome_usuario)
+            else:
+                bot.reply_to(message, f"☀️ Nada como a alegria de ter todos os peixes de {subcategoria_proxima} na cesta!")
+
+        else:
+            bot.reply_to(message, "Tipo inválido. Use 's' para os personagens que você possui, 'f' para os que você não possui, 'c' para uma categoria completa ou 'cf' para faltantes na categoria.")
+
+    except IndexError:
+        bot.reply_to(message, "Por favor, forneça o tipo ('s', 'f', 'c', 'se', 'fe' ou 'cf') e a subcategoria desejada após o comando, por exemplo: /cesta s bts")
+
+    except Exception as e:
+        print(f"Erro ao processar comando /cesta: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+
+  @bot.message_handler(commands=['hist'])
+def command_historico(message):
+    id_usuario = message.chat.id  
+    tipo_historico = message.text.split()[-1].lower()  
+
+    if tipo_historico == 'troca':
+        historico = obter_historico_trocas(id_usuario)
+        if historico:
+            historico_mensagem = "🤝 | Seu histórico de trocas:\n\n"
+            for troca in historico:
+                id_usuario1, id_usuario2, carta1, carta2, aceita = troca
+                carta1 = obter_nome(carta1)
+                carta2 = obter_nome(carta2)
+                nome1 = obter_nome_usuario_por_id(id_usuario1)
+                nome2 = obter_nome_usuario_por_id(id_usuario2)
+                status = "✅" if aceita else "⛔️"
+                mensagem = f"ꕤ Troca entre {nome1} e {nome2}:\n{carta1} e {carta2} - {status}\n\n"
+                historico_mensagem += mensagem
+
+            # Envia a mensagem com o histórico de trocas para o usuário
+            bot.send_message(id_usuario, historico_mensagem)
+        else:
+            # Envia uma mensagem se nenhum histórico de trocas foi encontrado
+            bot.send_message(id_usuario, "Nenhuma troca encontrada para este usuário.")
+
+    elif tipo_historico == 'pesca':
+        historico = obter_historico_pescas(id_usuario)
+        if historico:
+            historico_mensagem = "🎣 | Seu histórico de pescas:\n\n"
+            for pesca in historico:
+                id_carta, data_hora = pesca
+                carta1 = obter_nome(id_carta)
+                data_formatada = datetime.strftime(data_hora, "%d/%m/%Y - %H:%M")
+                mensagem = f"✦ Carta: {id_carta} → {carta1}\nPescada em: {data_formatada}\n\n"
+                historico_mensagem += mensagem
+
+            # Envia a mensagem com o histórico de pescas para o usuário
+            bot.send_message(id_usuario, historico_mensagem)
+        else:
+            # Envia uma mensagem se nenhum histórico de pescas foi encontrado
+            bot.send_message(id_usuario, "Nenhuma pesca encontrada para este usuário.")
+  @bot.message_handler(commands=['tag'])
+def verificar_comando_tag(message):
+    try:
+        parametros = message.text.split(' ', 1)[1:] 
+
+        if not parametros:
+            conn, cursor = conectar_banco_dados()
+            id_usuario = message.from_user.id
+            cursor.execute("SELECT DISTINCT nometag FROM tags WHERE id_usuario = %s", (id_usuario,))
+            tags = cursor.fetchall()
+            if tags:
+                resposta = "🔖| Suas tags:\n\n"
+                for tag in tags:
+                    resposta += f"• {tag[0]}\n"
+                bot.reply_to(message, resposta)
+            else:
+                bot.reply_to(message, "Você não possui nenhuma tag.")
+            fechar_conexao(cursor, conn)
+            return
+
+        nometag = parametros[0] 
+        id_usuario = message.from_user.id
+        mostrar_primeira_pagina_tag(message, nometag, id_usuario)
+
+    except Exception as e:
+        print(f"Erro ao processar comando /tag: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+
+@bot.message_handler(commands=['deltag'])
+def deletar_tag(message):
+    try:
+        conn, cursor = conectar_banco_dados()
+        id_usuario = message.from_user.id
+        args = message.text.split(maxsplit=1)
+        
+        if len(args) == 2:
+            tag_info = args[1].strip()
+
+            if '|' in tag_info:
+                id_list, nometag = [part.strip() for part in tag_info.split('|')]
+                ids_personagens = [id.strip() for id in id_list.split(',')]
+
+                for id_personagem in ids_personagens:
+                    cursor.execute("SELECT idtags FROM tags WHERE id_usuario = %s AND id_personagem = %s AND nometag = %s",
+                                   (id_usuario, id_personagem, nometag))
+                    tag_existente = cursor.fetchone()
+                    
+                    if tag_existente:
+                        idtag = tag_existente[0]
+                        cursor.execute("DELETE FROM tags WHERE idtags = %s", (idtag,))
+                        conn.commit()
+                        bot.reply_to(message, f"ID {id_personagem} removido da tag '{nometag}' com sucesso.")
+                    else:
+                        bot.reply_to(message, f"O ID {id_personagem} não está associado à tag '{nometag}'.")
+            
+            else:
+                nometag = tag_info.strip()
+                cursor.execute("DELETE FROM tags WHERE id_usuario = %s AND nometag = %s", (id_usuario, nometag))
+                conn.commit()
+                bot.reply_to(message, f"A tag '{nometag}' foi removida completamente.")
+        
+        else:
+            bot.reply_to(message, "Formato incorreto. Use /deltag id1, id2, id3 | nometag para remover IDs específicos da tag ou /deltag nometag para remover a tag inteira.")
+
+    except Exception as e:
+        print(f"Erro ao deletar tag: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
+def adicionar_tag(message):
+    try:
+        conn, cursor = conectar_banco_dados()
+        id_usuario = message.from_user.id
+        args = message.text.split(maxsplit=1)
+        
+        if len(args) == 2:
+            tag_info = args[1]
+            tag_parts = tag_info.split('|')
+            
+            if len(tag_parts) == 2:
+                ids_personagens_str = tag_parts[0].strip()
+                nometag = tag_parts[1].strip()
+                
+                if ids_personagens_str and nometag:
+                    ids_personagens = [id_personagem.strip() for id_personagem in ids_personagens_str.split(',')]
+                    
+                    valid_ids = []
+                    invalid_ids = []
+                    
+                    for id_personagem in ids_personagens:
+                        cursor.execute("SELECT COUNT(*) FROM inventario WHERE id_usuario = %s AND id_personagem = %s", (id_usuario, id_personagem))
+                        count_inventario = cursor.fetchone()[0]
+                        
+                        if count_inventario > 0:
+                            valid_ids.append(id_personagem)
+                        else:
+                            invalid_ids.append(id_personagem)
+                    
+                    if valid_ids:
+                        for id_personagem in valid_ids:
+                            cursor.execute("INSERT INTO tags (id_usuario, id_personagem, nometag) VALUES (%s, %s, %s)", (id_usuario, id_personagem, nometag))
+                            conn.commit()
+                        
+                        bot.reply_to(message, f"Tag '{nometag}' adicionada com sucesso.")
+                    else:
+                        bot.reply_to(message, "Nenhum ID de personagem válido encontrado.")
+                else:
+                    bot.reply_to(message, "Formato incorreto. Use /addtag id1,id2,... | nometag")
+            else:
+                bot.reply_to(message, "Formato incorreto. Use /addtag id1,id2,... | nometag")
+        else:
+            bot.reply_to(message, "Formato incorreto. Use /addtag id1,id2,... | nometag")
+    
+    except mysql.connector.Error as err:
+        print(f"Erro de MySQL: {err}")
+        bot.reply_to(message, "Ocorreu um erro ao processar a operação no banco de dados.")
+    
+    except Exception as e:
+        print(f"Erro ao adicionar tag: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar a operação.")
+    
+    finally:
+        fechar_conexao(cursor, conn)
+@bot.message_handler(commands=['sub'])
+def handle_sub_command(message):
+    try:
+        _, sub_command, sub_name = message.text.split()
+        sub_name = sub_name.lower()
+    except ValueError:
+        bot.reply_to(message, "Por favor, use o formato correto: /sub [s|f] [subobra]")
+        return
+
+    if sub_command == 's':
+        handle_sub_s(message, sub_name)
+    elif sub_command == 'f':
+        handle_sub_f(message, sub_name)
+    else:
+        bot.reply_to(message, "Comando inválido. Use '/sub s' ou '/sub f' para mostrar os personagens desta subobra.")
+@bot.message_handler(commands=['apoiar'])
+def doacao(message):
+    markup = telebot.types.InlineKeyboardMarkup()
+    chave_pix = "80388add-294e-4075-8cd5-8765cc9f9be0"
+    markup = telebot.types.InlineKeyboardMarkup()
+    markup.add(telebot.types.InlineKeyboardButton(text="Link do apoia.se 🌟", url="https://apoia.se/garden"))
+    mensagem = f"👨🏻‍🌾 Oi, jardineiro! Se está vendo esta mensagem, significa que está interessado em nos ajudar, certo? A equipe MabiGarden fica muito feliz em saber que nosso trabalho o agradou e o motivou a nos ajudar! \n\nCaso deseje contribuir com PIX, a chave é: <code>{chave_pix}</code> (clique na chave para copiar automaticamente) \n\nSe preferir, pode usar a plataforma apoia-se no botão abaixo!"
+    bot.send_message(message.chat.id, mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=message.message_id)
+
+  @bot.message_handler(commands=['gift'])
+def handle_gift_cards(message):
+    conn, cursor = conectar_banco_dados()
+    if message.from_user.id != 5532809878:
+        bot.reply_to(message, "Você não é a Hashi para usar esse comando.")
+        return
+    try:
+        _, quantity, card_id, user_id = message.text.split()
+        quantity = int(quantity)
+        card_id = int(card_id)
+        user_id = int(user_id)
+    except (ValueError, IndexError):
+        bot.reply_to(message, "Por favor, use o formato correto: /gift quantidade card_id user_id")
+        return
+    gift_cards(quantity, card_id, user_id)
+    bot.reply_to(message, f"{quantity} cartas adicionadas com sucesso!")
+
+  @bot.message_handler(commands=['rev'])
+def handle_rev_cards(message):
+    if message.from_user.id != 5532809878:
+        bot.reply_to(message, "Você não é a Maria para usar esse comando.")
+        return
+    try:
+        _, quantity, card_id, user_id = message.text.split()
+        quantity = int(quantity)
+        card_id = int(card_id)
+        user_id = int(user_id)
+    except (ValueError, IndexError):
+        bot.reply_to(message, "Por favor, use o formato correto: /rev quantidade card_id user_id")
+        return
+    success = rev_cards(message, quantity, card_id, user_id)
+    if success:
+        bot.reply_to(message, f"{quantity} cartas removidas com sucesso!")
+
+  @bot.message_handler(commands=['armazém', 'armazem', 'amz'])
+def armazem_command(message):
+    try:
+        id_usuario = message.from_user.id
+        usuario = message.from_user.first_name
+        verificar_id_na_tabela(id_usuario, "ban", "iduser")
+        
+        conn, cursor = conectar_banco_dados()
+        qnt_carta(id_usuario)
+        armazem_info[id_usuario] = {'id_usuario': id_usuario, 'usuario': usuario}
+        pagina = 1
+        resultados_por_pagina = 15
+        
+        id_fav_usuario, emoji_fav, nome_fav, imagem_fav = obter_favorito(id_usuario)
+
+        if id_fav_usuario is not None:
+            print(id_fav_usuario)
+            resposta = f"💌 | Cartas no armazém de {usuario}:\n\nFav: {emoji_fav} {id_fav_usuario} — {nome_fav}\n\n"
+
+            sql = f"""
+                SELECT id_personagem, emoji, nome_personagem, subcategoria, quantidade, categoria, evento
+                FROM (
+                    SELECT i.id_personagem, p.emoji, p.nome AS nome_personagem, p.subcategoria, i.quantidade, p.categoria, '' AS evento
+                    FROM inventario i
+                    JOIN personagens p ON i.id_personagem = p.id_personagem
+                    WHERE i.id_usuario = {id_usuario} AND i.quantidade > 0
+
+                    UNION
+
+                    SELECT e.id_personagem, e.emoji, e.nome AS nome_personagem, e.subcategoria, 0 AS quantidade, e.categoria, e.evento
+                    FROM evento e
+                    WHERE e.id_personagem IN (
+                        SELECT id_personagem
+                        FROM inventario
+                        WHERE id_usuario = {id_usuario} AND quantidade > 0
+                    )
+                ) AS combined
+                ORDER BY 
+                    CASE WHEN categoria = 'evento' THEN 0 ELSE 1 END, 
+                    categoria, 
+                    CAST(id_personagem AS UNSIGNED) ASC
+                LIMIT {15}
+            """
+            cursor.execute(sql)
+            resultados = cursor.fetchall()
+
+            if resultados:
+                markup = telebot.types.InlineKeyboardMarkup()
+                buttons_row = [
+                    telebot.types.InlineKeyboardButton("⏪️", callback_data=f"armazem_primeira_{pagina}_{id_usuario}"),
+                    telebot.types.InlineKeyboardButton("◀️", callback_data=f"armazem_anterior_{pagina}_{id_usuario}"),
+                    telebot.types.InlineKeyboardButton("▶️", callback_data=f"armazem_proxima_{pagina}_{id_usuario}"),
+                    telebot.types.InlineKeyboardButton("⏩️", callback_data=f"armazem_ultima_{pagina}_{id_usuario}")
+                ]
+                markup.row(*buttons_row)
+
+                for carta in resultados:
+                    id_carta, emoji_carta, nome_carta, subcategoria_carta, quantidade_carta, categoria_carta, evento_carta = carta
+                    quantidade_carta = int(quantidade_carta) if quantidade_carta is not None else 0
+
+                    if categoria_carta == 'evento':
+                        emoji_carta = obter_emoji_evento(evento_carta)
+
+                    if quantidade_carta == 1:
+                        letra_quantidade = ""
+                    elif 2 <= quantidade_carta <= 4:
+                        letra_quantidade = "🌾"
+                    elif 5 <= quantidade_carta <= 9:
+                        letra_quantidade = "🌼"
+                    elif 10 <= quantidade_carta <= 19:
+                        letra_quantidade = "☀️"
+                    elif 20 <= quantidade_carta <= 29:
+                        letra_quantidade = "🍯️"
+                    elif 30 <= quantidade_carta <= 39:
+                        letra_quantidade = "🐝"
+                    elif 40 <= quantidade_carta <= 49:
+                        letra_quantidade = "🌻"
+                    elif 50 <= quantidade_carta <= 100:
+                        letra_quantidade = "👑"
+                    elif 101 <= quantidade_carta:
+                        letra_quantidade = "👑"    
+                    else:
+                        letra_quantidade = ""
+
+                    repetida = " [+]" if quantidade_carta > 1 and categoria_carta != 'evento' else ""
+
+                    resposta += f" {emoji_carta} <code>{id_carta}</code> • {nome_carta} - {subcategoria_carta} {letra_quantidade}{repetida}\n"
+
+                quantidade_total_cartas = obter_quantidade_total_cartas(id_usuario)
+                total_paginas = (quantidade_total_cartas + resultados_por_pagina - 1) // resultados_por_pagina
+                resposta += f"\n{pagina}/{total_paginas}"
+                gif_url = obter_gif_url(id_fav_usuario, id_usuario)
+                print("gif", gif_url)
+                if gif_url:
+                    bot.send_animation(
+                        chat_id=message.chat.id,
+                        animation=gif_url,
+                        caption=resposta,
+                        reply_to_message_id=message.message_id,
+                        reply_markup=markup,
+                        parse_mode="HTML"
+                    )
+                else:
+                    bot.send_photo(
+                        chat_id=message.chat.id,
+                        photo=imagem_fav,
+                        caption=resposta,
+                        reply_to_message_id=message.message_id,
+                        reply_markup=markup,
+                        parse_mode="HTML"
+                    )
+            return
+
+        resposta = f"💌 | Cartas no armazém de {usuario}:\n\n"
+
+        sql = f"""
+            SELECT id_personagem, emoji, nome_personagem, subcategoria, quantidade, categoria, evento
+            FROM (
+                -- Consulta para cartas no inventário do usuário
+                SELECT i.id_personagem, p.emoji, p.nome AS nome_personagem, p.subcategoria, i.quantidade, p.categoria, '' AS evento
+                FROM inventario i
+                JOIN personagens p ON i.id_personagem = p.id_personagem
+                WHERE i.id_usuario = {id_usuario} AND i.quantidade > 0
+
+                UNION ALL
+
+                -- Consulta para cartas de evento que o usuário possui
+                SELECT e.id_personagem, e.emoji, e.nome AS nome_personagem, e.subcategoria, 0 AS quantidade, e.categoria, e.evento
+                FROM evento e
+                WHERE e.id_personagem IN (
+                    SELECT id_personagem
+                    FROM inventario
+                    WHERE id_usuario = {id_usuario} AND quantidade > 0
+                )
+            ) AS combined
+            ORDER BY 
+                CASE WHEN categoria = 'evento' THEN 0 ELSE 1 END, 
+                categoria, 
+                CAST(id_personagem AS UNSIGNED) ASC
+            LIMIT {resultados_por_pagina} OFFSET {(pagina - 1) * resultados_por_pagina}
+        """
+        cursor.execute(sql)
+        resultados = cursor.fetchall()
+
+        if resultados:
+            markup = telebot.types.InlineKeyboardMarkup()
+            buttons_row = [
+                telebot.types.InlineKeyboardButton("⏪️", callback_data=f"armazem_primeira_{pagina}_{id_usuario}"),
+                telebot.types.InlineKeyboardButton("◀️", callback_data=f"armazem_anterior_{pagina}_{id_usuario}"),
+                telebot.types.InlineKeyboardButton("▶️", callback_data=f"armazem_proxima_{pagina}_{id_usuario}"),
+                telebot.types.InlineKeyboardButton("⏩️", callback_data=f"armazem_ultima_{pagina}_{id_usuario}")
+            ]
+            markup.row(*buttons_row)
+
+            for carta in resultados:
+                id_carta, emoji_carta, nome_carta, subcategoria_carta, quantidade_carta, categoria_carta, evento_carta = carta
+                quantidade_carta = int(quantidade_carta) if quantidade_carta is not None else 0
+
+                if categoria_carta == 'evento':
+                    emoji_carta = obter_emoji_evento(evento_carta)
+
+                if quantidade_carta == 1:
+                    letra_quantidade = ""
+                elif 2 <= quantidade_carta <= 4:
+                    letra_quantidade = "🌾"
+                elif 5 <= quantidade_carta <= 9:
+                    letra_quantidade = "🌼"
+                elif 10 <= quantidade_carta <= 19:
+                    letra_quantidade = "☀️"
+                elif 20 <= quantidade_carta <= 29:
+                    letra_quantidade = "🍯️"
+                elif 30 <= quantidade_carta <= 39:
+                    letra_quantidade = "🐝"
+                elif 40 <= quantidade_carta <= 49:
+                    letra_quantidade = "🌻"
+                elif 50 <= quantidade_carta <= 100:
+                    letra_quantidade = "👑"
+                elif 101 <= quantidade_carta:
+                    letra_quantidade = "👑"    
+                else:
+                    letra_quantidade = ""
+
+                repetida = " [+]" if quantidade_carta > 1 and evento_carta else ""
+
+                resposta += f" {emoji_carta} <code>{id_carta}</code> • {nome_carta} - {subcategoria_carta} {letra_quantidade}{repetida}\n"
+
+            quantidade_total_cartas = obter_quantidade_total_cartas(id_usuario)
+            total_paginas = (quantidade_total_cartas + resultados_por_pagina - 1) // resultados_por_pagina
+            resposta += f"\n{pagina}/{total_paginas}"
+            
+            carta_aleatoria = random.choice(resultados)
+            id_carta_aleatoria, emoji_carta_aleatoria, _, _, _, _ = carta_aleatoria
+            foto_carta_aleatoria = obter_url_imagem_por_id(id_carta_aleatoria)
+            if foto_carta_aleatoria:
+                bot.send_photo(chat_id=message.chat.id, photo=foto_carta_aleatoria, caption=resposta, reply_to_message_id=message.message_id, reply_markup=markup, parse_mode="HTML")
+            else:       
+                bot.send_message(
+                    chat_id=message.chat.id,
+                    text=resposta,
+                    reply_to_message_id=message.message_id,
+                    reply_markup=markup,
+                    parse_mode="HTML"
+                )
+        else:
+            bot.send_message(
+                chat_id=message.chat.id,
+                text="Você não possui cartas no armazém.",
+                reply_to_message_id=message.message_id
+            )
+
+    except mysql.connector.Error as err:
+        print(f"Erro de SQL: {err}")
+        bot.send_message(message.chat.id, "Ocorreu um erro ao processar a consulta no banco de dados.")
+    except ValueError as e:
+        print(f"Erro: {e}")
+        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
+        bot.send_message(message.chat.id, mensagem_banido)
+    except telebot.apihelper.ApiHTTPException as e:
+        print(f"Erro na API do Telegram: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['youcompat'])
+def youcompat_command(message):
+    try:
+        if not message.reply_to_message:
+            bot.reply_to(message, "Você precisa usar este comando em resposta a uma mensagem de outro usuário.")
+            return
+
+        args = message.text.split()
+        if len(args) < 2:
+            bot.reply_to(message, "Uso: /youcompat <subcategoria>")
+            return
+        
+        subcategoria = ' '.join(args[1:])
+        subcategoria = verificar_apelido(subcategoria)
+        subcategoria_titulo = subcategoria.title()
+        
+        id_usuario_1 = message.from_user.id
+        nome_usuario_1 = message.from_user.first_name
+        id_usuario_2 = message.reply_to_message.from_user.id
+        nome_usuario_2 = message.reply_to_message.from_user.first_name
+
+        conn, cursor = conectar_banco_dados()
+
+        query = """
+        SELECT inv.id_personagem, per.nome
+        FROM inventario inv
+        JOIN personagens per ON inv.id_personagem = per.id_personagem
+        WHERE inv.id_usuario = %s AND per.subcategoria = %s
+        """
+        cursor.execute(query, (id_usuario_1, subcategoria))
+        personagens_usuario_1 = {row[0]: row[1] for row in cursor.fetchall()}
+
+        cursor.execute(query, (id_usuario_2, subcategoria))
+        personagens_usuario_2 = {row[0]: row[1] for row in cursor.fetchall()}
+
+        diferenca = set(personagens_usuario_1.keys()) - set(personagens_usuario_2.keys())
+        mensagem = f"<b>🎀 COMPATIBILIDADE 🎀 \n\n</b>🍎 | <b><i>{subcategoria_titulo}</i></b>\n🧺 |<b> Cesta de:</b> {nome_usuario_1} \n⛈️ | <b>Faltantes de:</b> {nome_usuario_2} \n\n"
+
+        if diferenca:
+            for id_personagem in diferenca:
+                mensagem += f"{id_personagem} - {personagens_usuario_1.get(id_personagem)}\n"
+        else:
+            mensagem = "Parece que não temos um match. Tente outra espécie!"
+
+        bot.send_message(message.chat.id, mensagem, parse_mode="HTML", reply_to_message_id=message.id)
+
+    except Exception as e:
+        bot.reply_to(message, f"Ocorreu um erro ao processar o comando: {e}")
+
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['mecompat'])
+def mecompat_command(message):
+    conn, cursor = conectar_banco_dados()
+    try:
+        if not message.reply_to_message:
+            bot.reply_to(message, "Você precisa usar este comando em resposta a uma mensagem de outro usuário.")
+            return
+
+        args = message.text.split()
+        if len(args) < 2:
+            bot.reply_to(message, "Uso: /mecompat <subcategoria>")
+            return
+        
+        subcategoria = ' '.join(args[1:])
+        subcategoria = verificar_apelido(subcategoria)
+        subcategoria_titulo = subcategoria.title()
+        
+        id_usuario_1 = message.from_user.id
+        nome_usuario_1 = message.from_user.first_name
+        id_usuario_2 = message.reply_to_message.from_user.id
+        nome_usuario_2 = message.reply_to_message.from_user.first_name
+
+        query = """
+        SELECT inv.id_personagem, per.nome
+        FROM inventario inv
+        JOIN personagens per ON inv.id_personagem = per.id_personagem
+        WHERE inv.id_usuario = %s AND per.subcategoria = %s
+        """
+        cursor.execute(query, (id_usuario_1, subcategoria))
+        personagens_usuario_1 = {row[0]: row[1] for row in cursor.fetchall()}
+
+        cursor.execute(query, (id_usuario_2, subcategoria))
+        personagens_usuario_2 = {row[0]: row[1] for row in cursor.fetchall()}
+
+        diferenca = set(personagens_usuario_2.keys()) - set(personagens_usuario_1.keys())
+        mensagem = f"<b>🎀 COMPATIBILIDADE 🎀 \n\n</b>🍎 | <b><i>{subcategoria_titulo}</i></b>\n🧺 |<b> Cesta de:</b> {nome_usuario_2} \n⛈️ | <b>Faltantes de:</b> {nome_usuario_1} \n\n"
+
+        if diferenca:
+            for id_personagem in diferenca:
+                mensagem += f"{id_personagem} - {personagens_usuario_2.get(id_personagem)}\n"
+        else:
+            mensagem = "Parece que não temos um match."
+
+        bot.send_message(message.chat.id, mensagem, parse_mode="HTML", reply_to_message_id=message.id)
+
+    except Exception as e:
+        bot.reply_to(message, f"Ocorreu um erro ao processar o comando: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['diary'])
+def diary_command(message):
+    user_id = message.from_user.id
+    today = date.today()
+    
+    conn, cursor = conectar_banco_dados()
+    
+    try:
+        cursor.execute("SELECT ultimo_diario, dias_consecutivos FROM diario WHERE id_usuario = %s", (user_id,))
+        result = cursor.fetchone()
+
+        if result:
+            ultimo_diario, dias_consecutivos = result
+
+            if ultimo_diario == today:
+                bot.send_message(message.chat.id, "Você já recebeu suas cenouras hoje. Volte amanhã!")
+                return
+
+            if ultimo_diario == today - timedelta(days=1):
+                dias_consecutivos += 1
+            else:
+                dias_consecutivos = 1
+
+            if dias_consecutivos <= 10:
+                cenouras = dias_consecutivos * 10
+            else:
+                cenouras = 100
+
+            cursor.execute("UPDATE diario SET ultimo_diario = %s, dias_consecutivos = %s WHERE id_usuario = %s", (today, dias_consecutivos, user_id))
+            cursor.execute("UPDATE usuarios SET cenouras = cenouras + %s WHERE id_usuario = %s", (cenouras, user_id))
+            conn.commit()
+        else:
+
+            cenouras = 10
+            dias_consecutivos = 1
+            cursor.execute("INSERT INTO diario (id_usuario, ultimo_diario, dias_consecutivos) VALUES (%s, %s, %s)", (user_id, today, dias_consecutivos))
+            cursor.execute("UPDATE usuarios SET cenouras = cenouras + %s WHERE id_usuario = %s", (cenouras, user_id))
+            conn.commit()
+
+        phrase = random.choice(phrases)
+        fortune = random.choice(fortunes)
+        bot.send_message(message.chat.id, f"<i>{phrase}</i>\n\n<b>{fortune}</b>\n\nVocê recebeu <i>{cenouras} cenouras</i>!\n\n <b>Dias consecutivos:</b> <i>{dias_consecutivos}</i>\n\n",parse_mode="HTML")
+
+        markup = telebot.types.InlineKeyboardMarkup()
+        markup.add(telebot.types.InlineKeyboardButton(text="Sim", callback_data="add_note"))
+        markup.add(telebot.types.InlineKeyboardButton(text="Não", callback_data="cancael_note"))
+        bot.send_message(message.chat.id, "Deseja anotar algo nesse dia especial?", reply_markup=markup)
+
+    except mysql.connector.Error as err:
+        print(f"Erro ao processar o comando /diary: {err}")
+        bot.send_message(message.chat.id, "Ocorreu um erro ao tentar registrar seu diário. Tente novamente mais tarde.")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['pages'])
+def pages_command(message):
+    user_id = message.from_user.id
+
+    conn, cursor = conectar_banco_dados()
+
+    try:
+        cursor.execute("SELECT data, anotacao FROM anotacoes WHERE id_usuario = %s ORDER BY data DESC", (user_id,))
+        anotacoes = cursor.fetchall()
+
+        if not anotacoes:
+            bot.send_message(message.chat.id, "Você ainda não tem anotações no diário.")
+            return
+
+        response = ""
+        for i, (data, anotacao) in enumerate(anotacoes, 1):
+            response += f"Dia {i} - {data.strftime('%d/%m/%Y')}\n"
+        
+        bot.send_message(message.chat.id, response)
+
+    except mysql.connector.Error as err:
+        print(f"Erro ao obter anotações: {err}")
+        bot.send_message(message.chat.id, "Ocorreu um erro ao tentar obter suas anotações. Tente novamente mais tarde.")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['page'])
+def page_command(message):
+    user_id = message.from_user.id
+    params = message.text.split(' ', 1)[1:]
+    if len(params) < 1:
+        bot.send_message(message.chat.id, "Uso: /page <número_da_página>")
+        return
+    page_number = int(params[0])
+
+    conn, cursor = conectar_banco_dados()
+
+    try:
+        cursor.execute("SELECT data, anotacao FROM anotacoes WHERE id_usuario = %s ORDER BY data DESC", (user_id,))
+        anotacoes = cursor.fetchall()
+
+        if not anotacoes:
+            bot.send_message(message.chat.id, "Você ainda não tem anotações no diário.")
+            return
+
+        if page_number < 1 or page_number > len(anotacoes):
+            bot.send_message(message.chat.id, "Número de página inválido.")
+            return
+
+        data, anotacao = anotacoes[page_number - 1]
+        response = f"Mabigarden, dia {data.strftime('%d/%m/%Y')}\n\nQuerido diário... {anotacao}"
+        
+        bot.send_message(message.chat.id, response)
+
+    except mysql.connector.Error as err:
+        print(f"Erro ao obter anotação: {err}")
+        bot.send_message(message.chat.id, "Ocorreu um erro ao tentar obter sua anotação. Tente novamente mais tarde.")
+    finally:
+        fechar_conexao(cursor, conn)
+
+
+@bot.message_handler(commands=['evento'])
+def evento_command(message):
+    try:
+        verificar_id_na_tabela(message.from_user.id, "ban", "iduser")
+        conn, cursor = conectar_banco_dados()
+        qnt_carta(message.from_user.id)
+        id_usuario = message.from_user.id
+        user = message.from_user
+        usuario = user.first_name
+        
+        comando_parts = message.text.split('/evento ', 1)[1].strip().lower().split(' ')
+        if len(comando_parts) >= 2:
+            evento = comando_parts[1]
+            print(evento)
+            subcategoria = ' '.join(comando_parts[1:])
+        else:
+            resposta = "Comando inválido. Use /evento <evento> <subcategoria>."
+            bot.send_message(message.chat.id, resposta)
+            return
+
+        sql_evento_existente = f"SELECT DISTINCT evento FROM evento WHERE evento = '{evento}'"
+        cursor.execute(sql_evento_existente)
+        evento_existente = cursor.fetchone()
+        if not evento_existente:
+            resposta = f"Evento '{evento}' não encontrado na tabela de eventos."
+            bot.send_message(message.chat.id, resposta)
+            return
+
+        if message.text.startswith('/evento s'):
+            resposta_completa = comando_evento_s(id_usuario, evento, subcategoria, cursor,usuario)
+        elif message.text.startswith('/evento f'):
+            resposta_completa = comando_evento_f(id_usuario, evento, subcategoria, cursor,usuario)
+        else:
+            resposta = "Comando inválido. Use /evento s <evento> <subcategoria> ou /evento f <evento> <subcategoria>."
+            bot.send_message(message.chat.id, resposta)
+            return
+
+        if isinstance(resposta_completa, tuple):
+            subcategoria_pesquisada, lista = resposta_completa
+            resposta = f"{lista}"
+            bot.send_message(message.chat.id, resposta)
+        else:
+            bot.send_message(message.chat.id, resposta_completa)
+    except ValueError as e:
+        print(f"Erro: {e}")
+        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
+        bot.send_message(message.chat.id, mensagem_banido)
+    finally:
+        fechar_conexao(cursor, conn)
+@bot.message_handler(commands=['wishlist'])
+def verificar_cartas(message):
+    try:
+        conn, cursor = conectar_banco_dados()
+        id_usuario = message.from_user.id
+
+        sql_wishlist = f"""
+            SELECT p.id_personagem, p.nome AS nome_personagem, p.subcategoria, p.emoji
+            FROM wishlist w
+            JOIN personagens p ON w.id_personagem = p.id_personagem
+            WHERE w.id_usuario = {id_usuario}
+            
+            UNION
+            
+            SELECT e.id_personagem, e.nome AS nome_personagem, e.subcategoria, e.emoji
+            FROM wishlist w
+            JOIN evento e ON w.id_personagem = e.id_personagem
+            WHERE w.id_usuario = {id_usuario}
+        """
+
+        cursor.execute(sql_wishlist)
+        cartas_wishlist = cursor.fetchall()
+
+        if cartas_wishlist:
+            cartas_removidas = []
+
+            for carta_wishlist in cartas_wishlist:
+                id_personagem_wishlist = carta_wishlist[0]
+                nome_carta_wishlist = carta_wishlist[1]
+                subcategoria_carta_wishlist = carta_wishlist[2]
+                emoji_carta_wishlist = carta_wishlist[3]
+
+                cursor.execute("SELECT COUNT(*) FROM inventario WHERE id_usuario = %s AND id_personagem = %s",
+                               (id_usuario, id_personagem_wishlist))
+                existing_inventory_count = cursor.fetchone()[0]
+                inventory_exists = existing_inventory_count > 0
+
+                if inventory_exists:
+                    cursor.execute("DELETE FROM wishlist WHERE id_usuario = %s AND id_personagem = %s",
+                                   (id_usuario, id_personagem_wishlist))
+                    cartas_removidas.append(f"{emoji_carta_wishlist} - {nome_carta_wishlist} de {subcategoria_carta_wishlist}")
+
+            if cartas_removidas:
+                resposta = f"Algumas cartas foram removidas da wishlist porque já estão no seu inventário:\n{', '.join(map(str, cartas_removidas))}"
+                bot.send_message(message.chat.id, resposta, reply_to_message_id=message.message_id)
+
+            lista_wishlist_atualizada = f"🤞 | Cartas na wishlist de {message.from_user.first_name}:\n\n"
+            for carta_atualizada in cartas_wishlist:
+                id_carta = carta_atualizada[0]
+                emoji_carta = carta_atualizada[3]
+                nome_carta = carta_atualizada[1]
+                subcategoria_carta = carta_atualizada[2]
+                lista_wishlist_atualizada += f"{emoji_carta} ∙ {id_carta} - {nome_carta} de {subcategoria_carta}\n"
+
+            bot.send_message(message.chat.id, lista_wishlist_atualizada, reply_to_message_id=message.message_id)
+        else:
+            bot.send_message(message.chat.id, "Sua wishlist está vazia! Devo te desejar parabéns?", reply_to_message_id=message.message_id)
+
+    except mysql.connector.Error as err:
+        print(f"Erro de SQL: {err}")
+        bot.send_message(message.chat.id, "Ocorreu um erro ao processar a consulta no banco de dados.", reply_to_message_id=message.message_id)
+    finally:
+        conn.commit() 
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['addw'])
+def add_to_wish(message):
+    try:
+        chat_id = message.chat.id
+        id_usuario = message.from_user.id
+        command_parts = message.text.split()
+        if len(command_parts) == 2:
+            id_personagem = command_parts[1]
+
+            conn, cursor = conectar_banco_dados()
+            cursor.execute("SELECT COUNT(*) FROM wishlist WHERE id_usuario = %s AND id_personagem = %s",
+                           (id_usuario, id_personagem))
+            existing_wishlist_count = cursor.fetchone()[0]
+            wishlist_exists = existing_wishlist_count > 0
+
+            if wishlist_exists:
+                bot.send_message(chat_id, "Você já possui essa carta na wishlist!", reply_to_message_id=message.message_id)
+            else:
+                cursor.execute("SELECT COUNT(*) FROM inventario WHERE id_usuario = %s AND id_personagem = %s",
+                               (id_usuario, id_personagem))
+                existing_inventory_count = cursor.fetchone()[0]
+                inventory_exists = existing_inventory_count > 0
+
+                if inventory_exists:
+                    bot.send_message(chat_id, "Você já possui essa carta no inventário!", reply_to_message_id=message.message_id)
+                else:
+                    cursor.execute("INSERT INTO wishlist (id_personagem, id_usuario) VALUES (%s, %s)",
+                                   (id_personagem, id_usuario))
+                    bot.send_message(chat_id, "Carta adicionada à sua wishlist!\nBoa sorte!", reply_to_message_id=message.message_id)
+            conn.commit()
+    except mysql.connector.Error as err:
+        print(f"Erro ao adicionar carta à wishlist: {err}")
+    finally:
+        fechar_conexao(cursor, conn)
+@bot.message_handler(commands=['ping'])
+def ping(message):
+    start_time = time.time() 
+
+    bot.reply_to(message, "🏓 Pong")
+    
+    end_time = time.time() 
+    elapsed_time = end_time - start_time 
+
+    rps = 1 / elapsed_time if elapsed_time > 0 else float('inf')
+
+    bot.send_message(message.chat.id, f"🏓 Pong \n\n🕒 Ping: {elapsed_time:.2f} segundos\n🚀 RPS: {rps:.2f}")
+
+
+@bot.message_handler(commands=['removew'])
+@bot.message_handler(commands=['delw'])
+def remover_da_wishlist(message):
+    try:
+        chat_id = message.chat.id
+        id_usuario = message.from_user.id
+        command_parts = message.text.split()
+        if len(command_parts) == 2:
+            id_personagem = command_parts[1]
+            
+        conn, cursor = conectar_banco_dados()
+        cursor.execute("SELECT COUNT(*) FROM wishlist WHERE id_usuario = %s AND id_personagem = %s",
+                       (id_usuario, id_personagem))
+        existing_carta_count = cursor.fetchone()[0]
+
+        if existing_carta_count > 0:
+            cursor.execute("DELETE FROM wishlist WHERE id_usuario = %s AND id_personagem = %s",
+                           (id_usuario, id_personagem))
+            bot.send_message(chat_id=chat_id, text="Carta removida da sua wishlist!", reply_to_message_id=message.message_id)
+        else:
+            bot.send_message(chat_id=chat_id, text="Você não possui essa carta na wishlist.", reply_to_message_id=message.message_id)
+        conn.commit()
+
+    except mysql.connector.Error as err:
+        print(f"Erro ao remover carta da wishlist: {err}")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.message_handler(commands=['cenourar'])
+def cenoura(message):
+    try:
+        conn, cursor = conectar_banco_dados()
+        id_usuario = message.from_user.id
+        print("Usuário não está banido. Pode cenourar.")
+        print(id_usuario)
+        ids_personagem = message.text.replace('/cenourar', '').strip().split(',')
+        ids_personagem = [id.strip() for id in ids_personagem if id.strip()]
+
+        if ids_personagem:
+            ids_formatados = ', '.join(ids_personagem)
+            confirmacao = f"Deseja cenourar as cartas:\n\n{ids_formatados}?"
+            keyboard = telebot.types.InlineKeyboardMarkup()
+            sim_button = telebot.types.InlineKeyboardButton(text="Sim", callback_data=f"cenourar_sim_{id_usuario}_{','.join(ids_personagem)}")
+            nao_button = telebot.types.InlineKeyboardButton(text="Não", callback_data=f"cenourar_nao_{id_usuario}")
+            keyboard.row(sim_button, nao_button)
+            bot.send_message(message.chat.id, confirmacao, reply_markup=keyboard)
+        else:
+            bot.send_message(message.chat.id, "Nenhum ID de personagem fornecido.")
+    except Exception as e:
+        print(f"Erro ao processar o comando de cenourar: {e}")
+        bot.send_message(message.chat.id, "Erro ao processar o comando de cenourar.")
+    finally:
+        fechar_conexao(cursor, conn)
+
+
+@bot.message_handler(commands=['pesca'])
+@bot.message_handler(commands=['pescar'])
+def pescar(message):
+    try:
+
+        nome = message.from_user.first_name
+        id = message.from_user.id
+
+        verificar_id_na_tabela(message.from_user.id, "ban", "iduser")
+        
+        qtd_iscas = verificar_giros(message.from_user.id)
+        if qtd_iscas == 0:
+            mensagem_iscas = "Você está sem iscas."
+            bot.send_message(message.chat.id, mensagem_iscas, reply_to_message_id=message.message_id)
+        else:
+            if not verificar_tempo_passado(message.chat.id):
+                return
+            else:
+                ultima_interacao[message.chat.id] = datetime.now()
+
+            if verificar_id_na_tabelabeta(message.from_user.id):
+                diminuir_giros(message.from_user.id, 1)
+                keyboard = telebot.types.InlineKeyboardMarkup()
+
+                primeira_coluna = [
+                    telebot.types.InlineKeyboardButton(text="☁  Música", callback_data='pescar_musica'),
+                    telebot.types.InlineKeyboardButton(text="🌷 Anime", callback_data='pescar_animanga'),
+                    telebot.types.InlineKeyboardButton(text="🧶  Jogos", callback_data='pescar_jogos')
+                ]
+                segunda_coluna = [
+                    telebot.types.InlineKeyboardButton(text="🍰  Filmes", callback_data='pescar_filmes'),
+                    telebot.types.InlineKeyboardButton(text="🍄  Séries", callback_data='pescar_series'),
+                    telebot.types.InlineKeyboardButton(text="🍂  Misc", callback_data='pescar_miscelanea')
+                ]
+
+                keyboard.add(*primeira_coluna)
+                keyboard.add(*segunda_coluna)
+                keyboard.row(telebot.types.InlineKeyboardButton(text="🫧  Geral", callback_data='pescar_geral'))
+                
+                photo = "https://telegra.ph/file/b3e6d2a41b68c2ceec8e5.jpg"
+                bot.send_photo(message.chat.id, photo=photo, caption=f'<i>Olá! {nome}, \nVocê tem disponivel: {qtd_iscas} iscas. \nBoa pesca!\n\nSelecione uma categoria:</i>', reply_markup=keyboard, reply_to_message_id=message.message_id,parse_mode="HTML")
+            else:
+                bot.send_message(message.chat.id, "Ei visitante, você não foi convidado! 😡", reply_to_message_id=message.message_id)
+
+    except ValueError as e:
+        print(f"Erro: {e}")
+        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
+        bot.send_message(message.chat.id, mensagem_banido, reply_to_message_id=message.message_id)
+@bot.message_handler(commands=['setbio'])
+def set_bio_command(message):
+
+    id_usuario = message.from_user.id
+    command_parts = message.text.split(maxsplit=1)
+    if len(command_parts) == 2:
+        nova_bio = command_parts[1].strip()
+        atualizar_coluna_usuario(id_usuario, 'bio', nova_bio)
+        bot.send_message(message.chat.id, f"Bio do {id_usuario} atualizada para: {nova_bio}")
+    else:
+        bot.send_message(message.chat.id, "Formato incorreto. Use /setbio seguido da nova bio desejada, por exemplo: /setbio Nova bio incrível.")
+@bot.message_handler(commands=['setmusica'])
+def set_musica_command(message):
+    command_parts = message.text.split(maxsplit=1)
+    if len(command_parts) == 2:
+        nova_musica = command_parts[1].strip()
+        id_usuario = message.from_user.id
+
+        atualizar_coluna_usuario(id_usuario, 'musica', nova_musica)
+        bot.send_message(message.chat.id, f"Música atualizada para: {nova_musica}")
+    else:
+        bot.send_message(message.chat.id, "Formato incorreto. Use /setmusica seguido da nova música, por exemplo: /setmusica nova_musica.")
+@bot.message_handler(commands=['picnic'])
+@bot.message_handler(commands=['trocar'])
+@bot.message_handler(commands=['troca'])
+def trade(message):
+    try:
+        chat_id = message.chat.id
+        eu = message.from_user.id
+        voce = message.reply_to_message.from_user.id
+        seunome = message.reply_to_message.from_user.first_name
+        meunome = message.from_user.first_name
+        bot_id = 7088149058
+        categoria = message.text.replace('/troca', '')
+        minhacarta = message.text.split()[1]
+        suacarta = message.text.split()[2]
+
+        if voce == bot_id:
+            bot.send_message(chat_id, "Você não pode fazer trocas com a Mabi :(", reply_to_message_id=message.message_id)
+            return
+
+        if verifica_inventario_troca(eu, minhacarta) == 0:
+            bot.send_message(chat_id, f"🌦️ ་  {meunome}, você não possui o peixe {minhacarta} para trocar.", reply_to_message_id=message.message_id)
+            return
+        
+        if verifica_inventario_troca(voce, suacarta) == 0:
+            bot.send_message(chat_id, f"🌦️ ་  Parece que {seunome} não possui o peixe {suacarta} para trocar.", reply_to_message_id=message.message_id)
+            return
+
+        info_minhacarta = obter_informacoes_carta(minhacarta)
+        info_suacarta = obter_informacoes_carta(suacarta)
+        emojiminhacarta, idminhacarta, nomeminhacarta, subcategoriaminhacarta = info_minhacarta
+        emojisuacarta, idsuacarta, nomesuacarta, subcategoriasuacarta = info_suacarta
+        meu_username = bot.get_chat_member(chat_id, eu).user.username
+        seu_username = bot.get_chat_member(chat_id, voce).user.username
+
+        seu_nome_formatado = f"@{seu_username}" if seu_username else seunome
+        texto = (
+            f"🥪 | Hora do picnic!\n\n"
+            f"{meunome} oferece de lanche:\n"
+            f" {idminhacarta} {emojiminhacarta}  —  {nomeminhacarta} de {subcategoriaminhacarta}\n\n"
+            f"E {seunome} oferece de lanche:\n"
+            f" {idsuacarta} {emojisuacarta}  —  {nomesuacarta} de {subcategoriasuacarta}\n\n"
+            f"Podemos começar a comer, {seu_nome_formatado}?"
+        )
+
+        keyboard = types.InlineKeyboardMarkup()
+
+        primeiro = [
+            types.InlineKeyboardButton(text="✅",
+                                       callback_data=f'troca_sim_{eu}_{voce}_{minhacarta}_{suacarta}_{chat_id}'),
+            types.InlineKeyboardButton(text="❌", callback_data=f'troca_nao_{eu}_{voce}_{minhacarta}_{suacarta}_{chat_id}'),
+        ]
+        keyboard.add(*primeiro)
+
+        image_url = "https://telegra.ph/file/8672c8f91c8e77bcdad45.jpg"
+        bot.send_photo(chat_id, image_url, caption=texto, reply_markup=keyboard, reply_to_message_id=message.reply_to_message.message_id)
+
+    except Exception as e:
+        print(f"Erro durante a troca: {e}")
+@bot.message_handler(commands=['admin'])
+def doar(message):
+    try:
+        id_usuario = message.from_user.id
+        if verificar_autorizacao(id_usuario):
+            markup = types.InlineKeyboardMarkup()
+            btn1 = types.InlineKeyboardButton('👨‍🌾 Beta', callback_data='beta_')
+            btn2 = types.InlineKeyboardButton('🐟 Adicionar ou Remover', callback_data='admdar_')
+            btn3 = types.InlineKeyboardButton('🚫 Banir', callback_data='banir_')
+            btn4 = types.InlineKeyboardButton('GIFS', callback_data='gif_')
+            btn_cancelar = types.InlineKeyboardButton('❌ Cancelar', callback_data='pcancelar')
+            markup.add(btn1, btn2, btn3)
+            markup.add(btn4, btn_cancelar)
+            bot.send_message(message.chat.id, "Escolha uma opção:", reply_markup=markup)
+        else:
+            bot.reply_to(message, "Você não está autorizado.")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+  @bot.message_handler(commands=['doar'])
+def doar(message):
+    try:
+        chat_id = message.chat.id
+        eu = message.from_user.id
+        args = message.text.split()
+
+        if len(args) < 3:
+            bot.send_message(chat_id, "Formato incorreto. Use /doar <ID_da_carta>")
+            return
+
+        quantidade = int(args[1]) 
+        minhacarta = int(args[2])
+        
+        conn, cursor = conectar_banco_dados()
+        cursor.execute("SELECT cenouras FROM usuarios WHERE id_usuario = %s", (eu,))
+        result = cursor.fetchone()
+
+        if result:
+            qnt_cenouras = int(result[0])
+        else:
+            qnt_cenouras = 0
+
+        if qnt_cenouras >= quantidade:
+            qnt_carta = verifica_inventario_troca(eu, minhacarta)
+            if qnt_carta > 0:
+                destinatario_id = None
+                nome_destinatario = None
+
+                if message.reply_to_message and message.reply_to_message.from_user:
+                    destinatario_id = message.reply_to_message.from_user.id
+                    nome_destinatario = message.reply_to_message.from_user.first_name
+
+                if not destinatario_id:
+                    bot.send_message(chat_id, "Você precisa responder a uma mensagem para doar a carta.")
+                    return
+
+                nome_carta = obter_nome(minhacarta)
+                qnt_str = f"uma unidade do peixe" if qnt_carta == 1 else f"{qnt_carta} unidades do peixe"
+                cen_str = f"cenoura" if quantidade == 1 else f"cenouras"
+                texto = f"Olá, {message.from_user.first_name}!\n\nVocê tem {qnt_cenouras} {cen_str} e {qnt_str}: {minhacarta} — {nome_carta}.\n\n"
+                texto += f"Deseja gastar {quantidade} {cen_str} para doar {quantidade} desses peixes para {nome_destinatario}?"
+
+                keyboard = telebot.types.InlineKeyboardMarkup()
+                keyboard.row(
+                    telebot.types.InlineKeyboardButton(text="Sim", callback_data=f'confirmar_doacao_{eu}_{minhacarta}_{destinatario_id}_{quantidade}'),
+                    telebot.types.InlineKeyboardButton(text="Não", callback_data=f'tcancelar_{eu}')
+                )
+
+                bot.send_message(chat_id, texto, reply_markup=keyboard)
+            else:
+                bot.send_message(chat_id, "Você não pode doar uma carta que não possui.")
+        else:
+            bot.send_message(chat_id, "Você não possui cenouras suficientes para fazer uma doação.")
+
+    except Exception as e:
+        print(f"Erro durante o comando de doação: {e}")
+
+@bot.message_handler(commands=['criar_colagem'])
+def criar_colagem(message):
+    try:
+        cartas_aleatorias = obter_cartas_aleatorias()
+        data_atual_str = dt_module.date.today().strftime("%Y-%m-%d") 
+        print(data_atual_str)
+        if not cartas_aleatorias:
+            bot.send_message(message.chat.id, "Não foi possível obter cartas aleatórias.")
+            return
+
+        registrar_cartas_loja(cartas_aleatorias, data_atual_str)
+        imagens = []
+        for carta in cartas_aleatorias:
+            img_url = carta.get('imagem', '')
+            try:
+                if img_url:
+                    response = requests.get(img_url)
+                    if response.status_code == 200:
+                        img = Image.open(io.BytesIO(response.content))
+                        img = img.resize((300, 400), Image.LANCZOS)
+                    else:
+                        img = Image.new('RGB', (300, 400), color='black')
+                else:
+
+                    img = Image.new('RGB', (300, 400), color='black')
+            except Exception as e:
+                print(f"Erro ao abrir a imagem da carta {carta['id']}: {e}")
+
+                img = Image.new('RGB', (300, 400), color='black')
+            imagens.append(img)
+
+        altura_total = (len(imagens) // 3) * 400
+
+        colagem = Image.new('RGB', (900, altura_total))  
+        coluna_atual = 0
+        linha_atual = 0
+
+        for img in imagens:
+            colagem.paste(img, (coluna_atual, linha_atual))
+            coluna_atual += 300
+
+            if coluna_atual >= 900:
+                coluna_atual = 0
+                linha_atual += 400
+
+        colagem.save('colagem_cartas.png')
+        
+        with open('colagem_cartas.png', 'rb') as photo:
+            bot.send_photo(message.chat.id, photo)
+        enviar_mensagem_loja(message, cartas_aleatorias)
+    except Exception as e:
+        print(f"Erro ao criar colagem: {e}")
+        bot.send_message(message.chat.id, "Erro ao criar colagem.")
+
+  @bot.message_handler(commands=['vendinha'])
+def loja(message):
+    try:
+        verificar_id_na_tabela(message.from_user.id, "ban", "iduser")
+        keyboard = telebot.types.InlineKeyboardMarkup()
+
+        keyboard.row(telebot.types.InlineKeyboardButton(text="🎣 Peixes do dia", callback_data='loja_loja'))
+        keyboard.row(telebot.types.InlineKeyboardButton(text="🎴 Estou com sorte", callback_data='loja_geral'))
+        keyboard.row(telebot.types.InlineKeyboardButton(text="🐰 Lojinha do Bunny", callback_data='loja_compras'))
+
+        image_url = "https://telegra.ph/file/ea116d98a5bd8d6179612.jpg"
+        bot.send_photo(message.chat.id, image_url,
+                       caption='Olá! Seja muito bem-vindo à vendinha da Mabi. Como posso te ajudar?',
+                       reply_markup=keyboard, reply_to_message_id=message.message_id)
+
+    except ValueError as e:
+        print(f"Erro: {e}")
+        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
+        bot.send_message(message.chat.id, mensagem_banido, reply_to_message_id=message.message_id)
+
+  @bot.message_handler(commands=['peixes'])
+def verificar_comando_peixes(message):
+    try:
+        parametros = message.text.split(' ', 2)[1:]  
+
+        if not parametros:
+            bot.reply_to(message, "Por favor, forneça a subcategoria.")
+            return
+        
+        subcategoria = " ".join(parametros)  
+        
+        if len(parametros) > 1 and parametros[0] == 'img':
+            subcategoria = " ".join(parametros[1:])
+            enviar_imagem_peixe(message, subcategoria)
+        else:
+            mostrar_lista_peixes(message, subcategoria)
+        
+    except Exception as e:
+        print(f"Erro ao processar comando /peixes: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+@bot.message_handler(commands=['colagem'])
+def criar_colagem(message):
+    try:
+
+        if len(message.text.split()) != 7:
+            bot.reply_to(message, "Por favor, forneça exatamente 6 IDs de cartas separados por espaços.")
+            return
+        ids_cartas = message.text.split()[1:]
+        imagens = []
+        
+        for id_carta in ids_cartas:
+            img_url = obter_url_imagem_por_id(id_carta)
+            if img_url:
+                print(id_carta)
+                response = requests.get(img_url)
+                if response.status_code == 200:
+                    img = Image.open(io.BytesIO(response.content))
+                    img = manter_proporcoes(img, 300, 400)  
+                else:
+                    img = Image.new('RGB', (300, 400), color='black')
+            else:
+                img = Image.new('RGB', (300, 400), color='black')
+            imagens.append(img)
+        
+        altura_total = ((len(imagens) - 1) // 3 + 1) * 400
+        colagem = Image.new('RGB', (900, altura_total))  
+        coluna_atual = 0
+        linha_atual = 0
+
+        for img in imagens:
+            colagem.paste(img, (coluna_atual, linha_atual))
+            coluna_atual += 300
+
+            if coluna_atual >= 900:
+                coluna_atual = 0
+                linha_atual += 400
+
+        colagem_path = 'colagem_cartas.png'
+        colagem.save(colagem_path)
+
+        with open(colagem_path, 'rb') as photo:
+            bot.send_photo(message.chat.id, photo)
+
+    except Exception as e:
+        print(f"Erro ao criar colagem: {e}")
+        bot.reply_to(message, "Erro ao criar colagem.")
+@bot.message_handler(commands=['enviar_mensagem'])
+def enviar_mensagem_privada(message):
+    try:
+
+        if len(message.text.split()) < 3:
+            bot.reply_to(message, "Formato incorreto. Use /enviar_mensagem <id_usuario> <sua_mensagem>")
+            return
+
+        _, user_id, *mensagem = message.text.split(maxsplit=2)
+        user_id = int(user_id)
+        mensagem = mensagem[0]
+
+        bot.send_message(user_id, mensagem)
+        
+        bot.reply_to(message, f"Mensagem enviada para o usuário {user_id} com sucesso!")
+        
+    except ValueError:
+        bot.reply_to(message, "ID de usuário inválido. Certifique-se de fornecer um número inteiro válido.")
+    except Exception as e:
+        print(f"Erro ao enviar mensagem: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao enviar a mensagem.")
+
+@bot.message_handler(commands=['enviar_grupo'])
+def enviar_mensagem_grupo(message):
+    try:
+
+        if len(message.text.split()) < 3:
+            bot.reply_to(message, "Formato incorreto. Use /enviar_grupo <id_grupo> <sua_mensagem>")
+            return
+        
+        _, group_id, *mensagem = message.text.split(maxsplit=2)
+        group_id = int(group_id)
+        mensagem = mensagem[0]
+
+        bot.send_message(group_id, mensagem)
+
+        bot.reply_to(message, f"Mensagem enviada para o grupo {group_id} com sucesso!")
+        
+    except ValueError:
+        bot.reply_to(message, "ID de grupo inválido. Certifique-se de fornecer um número inteiro válido.")
+    except Exception as e:
+        print(f"Erro ao enviar mensagem para o grupo: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao enviar a mensagem para o grupo.")
+
+@bot.message_handler(commands=['legenda'])
+def gerar_legenda(message):
+    try:
+        ids_cartas = message.text.split('/legenda')[1].strip().split()
+        if len(ids_cartas) < 1:
+            bot.send_message(message.chat.id, "Informe pelo menos um ID de carta.")
+            return
+        mensagem_legenda = "Legenda:\n\n"
+        for id_carta in ids_cartas:
+            info_carta = obter_info_carta_por_id(id_carta)
+            if info_carta:
+                mensagem_legenda += f"{info_carta['emoji']} | {info_carta['id']} • {info_carta['nome']} - {info_carta['subcategoria']}\n"
+            else:
+                mensagem_legenda += f"ID {id_carta} não encontrado.\n"
+
+        bot.send_message(message.chat.id, mensagem_legenda, reply_to_message_id=message.message_id)
+    except Exception as e:
+        print(f"Erro ao processar comando /legenda: {e}")
+              
