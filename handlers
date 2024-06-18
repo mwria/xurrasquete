@@ -1,0 +1,783 @@
+@bot.callback_query_handler(func=lambda call: call.data.startswith('submenu_'))
+def callback_submenu(call):
+    _, subcategoria, submenu_selecionado = call.data.split('_')
+    conn, cursor = conectar_banco_dados()
+    try:
+        cartas_disponiveis = obter_cartas_por_subcategoria_e_submenu(subcategoria, submenu_selecionado, cursor)
+        if cartas_disponiveis:
+            carta_aleatoria = random.choice(cartas_disponiveis)
+            if carta_aleatoria:
+                id_personagem_carta, emoji, nome, imagem = carta_aleatoria
+                send_card_message(call.message, emoji, id_personagem_carta, nome, subcategoria, imagem)
+                qnt_carta(call.message.chat.id)
+            else:
+                bot.send_message(call.message.chat.id, "Nenhuma carta disponível para esta combinação de subcategoria e submenu.")
+        else:
+            bot.send_message(call.message.chat.id, "Nenhuma carta disponível para esta combinação de subcategoria e submenu.")
+    finally:
+        cursor.close()
+        conn.close()       
+
+  @bot.callback_query_handler(func=lambda call: call.data == "add_note")
+def handle_add_note_callback(call):
+    markup = telebot.types.InlineKeyboardMarkup()
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Por favor, envie sua anotação para o diário.", reply_markup=markup)
+    bot.register_next_step_handler(call.message, receive_note)
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_note")
+def handle_cancel_note_callback(call):
+    bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Tudo bem, até amanhã!")
+@bot.callback_query_handler(func=lambda call: call.data.startswith('help_'))
+def callback_help(call):
+    if call.data == 'help_cartas':
+        help_text = (
+            "<b>Aqui estão os comandos relacionados a Cartas:</b>\n\n"
+            "<b>/armazem, /armazém, /amz </b> - Olhe os peixes (cartas) que você possui.\n"
+            "<b>"
+            
+            
+            
+            
+        )
+    elif call.data == 'help_trocas':
+        help_text = "Aqui estão os comandos relacionados a Trocas:\n\n"
+        # Adicione a descrição dos comandos relacionados a Trocas
+        help_text += "/troca - Comando de troca (detalhes do comando de troca).\n"
+    elif call.data == 'help_eventos':
+        help_text = "Aqui estão os comandos relacionados a Eventos:\n\n"
+        # Adicione a descrição dos comandos relacionados a Eventos
+        help_text += "<b>/evento (f ou s para faltantes ou possuidos) </b>- Comando ver os peixes de eventos. ex: /evento s amor. \n"
+
+    elif call.data == 'help_bugs':
+        help_text = "Aqui estão os comandos relacionados a Usuários:\n\n"
+        # Adicione a descrição dos comandos relacionados a Bugs
+        help_text += ("/setuser - Comando para definir seu usuário. ex: /setuser maria\n"
+                      "/setfav - Comando para definir seu peixe favorito, que aparece no seu armazem e perfil. ex: /setfav 10150"
+                      "/removefav - Comando para remover seu peixe favorito. ex: /removefav 10150"
+                      )
+    elif call.data == 'help_tudo':
+        help_text = (
+            "Aqui estão todos os comandos disponíveis:\n\n"
+            "/armazem, /armazém, /amz - Olhe os peixes (cartas) que você possui.\n"
+            "/evento evento <subcategoria> - Comando para interagir com eventos. Use /evento s para subcategoria e /evento f para favoritos.\n"
+            "/troca - Comando de troca (detalhes do comando de troca).\n"
+            "/reportar_bug - Comando para reportar bugs.\n"
+        )
+    
+    bot.edit_message_text(help_text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+@bot.callback_query_handler(func=lambda call: call.data.startswith("submenus_"))
+def callback_submenus(call):
+    try:
+        parts = call.data.split('_')
+        pagina = int(parts[1])
+        subcategoria = parts[2]
+
+        conn, cursor = conectar_banco_dados()
+        query_total = "SELECT COUNT(DISTINCT submenu) FROM personagens WHERE subcategoria = %s"
+        cursor.execute(query_total, (subcategoria,))
+        total_registros = cursor.fetchone()[0]
+        total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+
+        editar_mensagem_submenus(call, subcategoria, pagina, total_paginas)
+
+    except Exception as e:
+        print(f"Erro ao processar callback de página para submenus: {e}")
+        
+@bot.callback_query_handler(func=lambda call: call.data.startswith("especies_"))
+def callback_especies(call):
+    try:
+        parts = call.data.split('_')
+        pagina = int(parts[1])
+        categoria = parts[2]
+
+        conn, cursor = conectar_banco_dados()
+        query_total = "SELECT COUNT(DISTINCT subcategoria) FROM personagens WHERE categoria = %s"
+        cursor.execute(query_total, (categoria,))
+        total_registros = cursor.fetchone()[0]
+        total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+
+        editar_mensagem_especies(call, categoria, pagina, total_paginas)
+
+    except Exception as e:
+        print(f"Erro ao processar callback de página para espécies: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('poço_dos_desejos'))
+def handle_poco_dos_desejos(call):
+    usuario = call.from_user.first_name
+    image_url = "https://telegra.ph/file/94c9c66af4ca4d6f0a3e5.jpg"
+    caption = (f"<i>Enquanto os demais camponeses estavam distraídos com suas pescas, {usuario} caminhava para um lugar mais distante, até que encontrou uma floresta mágica.\n\n</i>"
+               "<i>Já havia escutado seus colegas falando da mesma mas sempre duvidou que era real.</i>\n\n"
+               "⛲: <i><b>Oh! Olá camponês, imagino que a dona do jardim tenha te mandado pra cá, certo?</b></i>\n\n"
+               "<i>Apesar da confusão com a voz repentina, perguntou a fonte o que aquilo significava.\n\n</i>"
+               "⛲: <i><b>Sou uma fonte dos desejos! você tem direito a fazer um pedido, em troca eu peço apenas algumas cenouras. Se os peixes que você deseja estiverem disponíveis e a sorte ao seu favor eles irão aparecer no seu armazém. Se não, volte mais tarde com outras cenouras.</b></i>")
+    media = InputMediaPhoto(image_url, caption=caption, parse_mode="HTML")
+    bot.edit_message_media(media, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=create_wish_buttons())
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('fazer_pedido'))
+def handle_fazer_pedido(call):
+    image_url = "https://telegra.ph/file/94c9c66af4ca4d6f0a3e5.jpg"
+    caption = "<b>⛲: Para pedir os seus peixes é simples!</b> \n\nMe envie até <b>5 IDs</b> dos peixes e a quantidade de cenouras que você quer doar \n(eu aceito qualquer quantidade entre 10 e 20 cenouras...) \n\n<i>exemplo: ID1 ID2 ID3 ID4 ID5 cenouras</i>"
+    media = InputMediaPhoto(image_url, caption=caption, parse_mode="HTML")
+    bot.edit_message_media(media, chat_id=call.message.chat.id, message_id=call.message.message_id)
+    bot.register_next_step_handler(call.message, process_wish)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('notificar_'))
+def callback_handler(call):
+    try:
+        id_personagem = int(call.data.split('_')[1])
+        conn, cursor = conectar_banco_dados()
+        cursor.execute("SELECT rodados FROM cartas WHERE id_personagem = %s", (id_personagem,))
+        quantidade_personagem = cursor.fetchone()
+
+        if quantidade_personagem is not None and quantidade_personagem[0] >= 0:
+            bot.answer_callback_query(call.id, f"Esta carta foi rodada {quantidade_personagem[0]} vezes!")
+        else:
+            bot.answer_callback_query(call.id, f"Esta carta não foi rodada ainda :(!")
+            bot.answer_callback_query(call.id, "Erro ao obter a quantidade da carta.")
+    except Exception as e:
+        print(f"Erro ao lidar com o callback: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
+  @bot.callback_query_handler(func=lambda call: call.data.startswith(('next_button', 'prev_button')))
+def navigate_messages(call):
+    try:
+        chat_id = call.message.chat.id
+        data_parts = call.data.split('_')
+
+        if len(data_parts) == 4 and data_parts[0] in ('next', 'prev'):
+            direction, current_index, total_count = data_parts[0], int(data_parts[2]), int(data_parts[3])
+        else:
+            raise ValueError("Callback_data com número incorreto de partes ou formato inválido.")
+
+        user_id = call.from_user.id
+        mensagens, _ = load_user_state(user_id, 'gnomes')
+        if direction == 'next':
+            current_index += 1
+        elif direction == 'prev':
+            current_index -= 1
+        media_url, mensagem = mensagens[current_index]
+        markup = create_navigation_markup(current_index, len(mensagens))
+
+        if media_url:
+            if media_url.lower().endswith(".gif"):
+                bot.edit_message_media(chat_id=chat_id, message_id=call.message.message_id, media=telebot.types.InputMediaAnimation(media=media_url, caption=mensagem, parse_mode="HTML"), reply_markup=markup)
+            elif media_url.lower().endswith(".mp4"):
+                bot.edit_message_media(chat_id=chat_id, message_id=call.message.message_id, media=telebot.types.InputMediaVideo(media=media_url, caption=mensagem, parse_mode="HTML"), reply_markup=markup)
+            elif media_url.lower().endswith((".jpeg", ".jpg", ".png")):
+                bot.edit_message_media(chat_id=chat_id, message_id=call.message.message_id, media=telebot.types.InputMediaPhoto(media=media_url, caption=mensagem, parse_mode="HTML"), reply_markup=markup)
+            else:
+                bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=mensagem, reply_markup=markup, parse_mode="HTML")
+        else:
+            bot.edit_message_text(chat_id=chat_id, message_id=call.message.message_id, text=mensagem, reply_markup=markup, parse_mode="HTML")
+
+    except Exception as e:
+        print("Erro ao processar callback dos botões de navegação:", str(e))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('prox_button', 'ant_button')))
+def navigate_gnome_results(call):
+    try:
+        chat_id = call.message.chat.id
+        data_parts = call.data.split('_')
+
+        if len(data_parts) == 4 and data_parts[0] in ('prox', 'ant'):
+            direction, current_page, total_pages = data_parts[0], int(data_parts[2]), int(data_parts[3])
+        else:
+            raise ValueError("Callback_data com número incorreto de partes ou formato inválido.")
+
+        user_id = call.from_user.id
+        resultados, _, message_id = load_state(user_id, 'gnomes')
+        if direction == 'prox':
+            current_page = min(current_page + 1, total_pages)
+        elif direction == 'ant':
+            current_page = max(current_page - 1, 1)
+            
+        resultados_pagina_atual = resultados[(current_page - 1) * 15 : current_page * 15]
+        lista_resultados = [f"{emoji} - {id_personagem} - {nome} de {subcategoria}" for emoji, id_personagem, nome, subcategoria in resultados_pagina_atual]
+        mensagem_final = f"🐠 Peixes de nome', página {current_page}/{total_pages}:\n\n" + "\n".join(lista_resultados)
+        markup = create_navegacao_markup(current_page, total_pages)
+
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=mensagem_final, reply_markup=markup)
+
+    except Exception as e:
+        print("Erro ao processar callback dos botões de navegação:", str(e))
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("cesta_"))
+def callback_query_cesta(call):
+    global processing_lock
+
+    if not processing_lock.acquire(blocking=False):
+        return
+
+    try:
+        parts = call.data.split('_')
+        tipo = parts[1]
+        pagina = int(parts[2])
+        categoria = parts[3]
+        id_usuario_original = int(parts[4])
+        nome_usuario = bot.get_chat(id_usuario_original).first_name
+
+        if tipo == 's':
+            ids_personagens = obter_ids_personagens_inventario(id_usuario_original, categoria)
+            ids_personagens_evento = obter_ids_personagens_evento(id_usuario_original, categoria, incluir=False)
+            ids_personagens.extend(ids_personagens_evento)
+            total_personagens_subcategoria = obter_total_personagens_subcategoria(categoria)
+            total_registros = len(ids_personagens)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_s(call.message, categoria, id_usuario_original, pagina, total_paginas, ids_personagens, total_personagens_subcategoria, nome_usuario, call=call)
+            else:
+                bot.reply_to(call.message, f"Nenhum personagem encontrado na cesta '{categoria}'.")
+
+        elif tipo == 'f':
+            ids_personagens_faltantes = obter_ids_personagens_faltantes(id_usuario_original, categoria)
+            ids_personagens_evento = obter_ids_personagens_evento(id_usuario_original, categoria, incluir=True)
+            ids_personagens_faltantes.extend(ids_personagens_evento)
+            total_personagens_subcategoria = obter_total_personagens_subcategoria(categoria)
+            total_registros = len(ids_personagens_faltantes)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_f(call.message, categoria, id_usuario_original, pagina, total_paginas, ids_personagens_faltantes, total_personagens_subcategoria, nome_usuario, call=call)
+            else:
+                bot.reply_to(call.message, f"Todos os personagens na subcategoria '{categoria}' estão no seu inventário.")
+
+        elif tipo == 'c':
+            ids_personagens = obter_ids_personagens_categoria(id_usuario_original, categoria)
+            total_personagens_categoria = obter_total_personagens_categoria(categoria)
+            total_registros = len(ids_personagens)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_c(call.message, categoria, id_usuario_original, pagina, total_paginas, ids_personagens, total_personagens_categoria, nome_usuario, call=call)
+            else:
+                bot.reply_to(call.message, f"Nenhum personagem encontrado na categoria '{categoria}'.")
+
+        elif tipo == 'cf':
+            ids_personagens_faltantes = obter_ids_personagens_faltantes_categoria(id_usuario_original, categoria)
+            total_personagens_categoria = obter_total_personagens_categoria(categoria)
+            total_registros = len(ids_personagens_faltantes)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_cf(call.message, categoria, id_usuario_original, pagina, total_paginas, ids_personagens_faltantes, total_personagens_categoria, nome_usuario, call=call)
+            else:
+                bot.reply_to(call.message, f"Você possui todos os personagens na categoria '{categoria}'.")
+
+        elif tipo == 'se':
+            ids_personagens = obter_ids_personagens_inventario(id_usuario_original, categoria)
+            ids_personagens_evento = obter_ids_personagens_evento(id_usuario_original, categoria, incluir=True)
+            ids_personagens.extend(ids_personagens_evento)
+            total_personagens_evento = len(ids_personagens_evento)
+            total_personagens_com_evento = obter_total_personagens_subcategoria(categoria) + total_personagens_evento
+            total_registros = len(ids_personagens)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_s(call.message, categoria, id_usuario_original, pagina, total_paginas, ids_personagens, total_personagens_com_evento, nome_usuario, call=call)
+            else:
+                bot.reply_to(call.message, f"Nenhum personagem encontrado na cesta '{categoria}'.")
+
+        elif tipo == 'fe':
+            ids_personagens_faltantes = obter_ids_personagens_faltantes(id_usuario_original, categoria)
+            ids_personagens_evento = obter_ids_personagens_evento(id_usuario_original, categoria, incluir=True)
+            ids_personagens_faltantes.extend(ids_personagens_evento)
+            total_personagens_subcategoria = obter_total_personagens_subcategoria(categoria)
+            total_registros = len(ids_personagens_faltantes)
+
+            if total_registros > 0:
+                total_paginas = (total_registros // 15) + (1 if total_registros % 15 > 0 else 0)
+                mostrar_pagina_cesta_f(call.message, categoria, id_usuario_original, pagina, total_paginas, ids_personagens_faltantes, total_personagens_subcategoria, nome_usuario, call=call)
+            else:
+                bot.reply_to(call.message, f"Todos os personagens na subcategoria '{categoria}' estão no seu inventário.")
+
+    except Exception as e:
+        print(f"Erro ao processar callback da cesta: {e}")
+    finally:
+        processing_lock.release()
+@bot.callback_query_handler(func=lambda call: call.data.startswith('total_'))
+def callback_total_personagem(call):
+    conn, cursor = conectar_banco_dados()
+    chat_id = call.message.chat.id
+
+    id_pesquisa = call.data.split('_')[1]
+
+    sql_total = "SELECT total FROM personagens WHERE id_personagem = %s"
+    cursor.execute(sql_total, (id_pesquisa,))
+    total_pescados = cursor.fetchone()
+
+    if total_pescados is not None and total_pescados[0] is not None:
+        if total_pescados[0] > 1:
+            bot.answer_callback_query(call.id, text=f"O personagem foi pescado {total_pescados[0]} vezes!", show_alert=True)
+        elif total_pescados[0] == 1:
+            bot.answer_callback_query(call.id, text=f"O personagem foi pescado {total_pescados[0]} vez!", show_alert=True)
+        else:
+            bot.answer_callback_query(call.id, text="Esse personagem ainda não foi pescado :(", show_alert=True)
+    else:
+        bot.answer_callback_query(call.id, text="Esse personagem ainda não foi pescado :(", show_alert=True)         
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('armazem_anterior_', 'armazem_proxima_','armazem_ultima_','armazem_primeira_')))
+def callback_paginacao_armazem(call):
+    try:
+        conn, cursor = conectar_banco_dados()
+        chat_id = call.message.chat.id
+        _, direcao, pagina_str, id_usuario = call.data.split('_')
+        pagina = int(pagina_str)
+        info_armazem = armazem_info.get(int(id_usuario), {})
+        id_usuario = info_armazem.get('id_usuario', '')
+        usuario = info_armazem.get('usuario', '')
+        resultados_por_pagina = 15
+        offset = (pagina - 1) * resultados_por_pagina
+
+        quantidade_total_cartas = obter_quantidade_total_cartas(id_usuario)
+        total_paginas = quantidade_total_cartas // resultados_por_pagina + 1
+        limite = resultados_por_pagina
+
+        if pagina == 1 and call.data.startswith("armazem_anterior_"):
+            print("Indo para a última página")
+            pagina = total_paginas
+            offset = (pagina - 1) * resultados_por_pagina
+            limite = quantidade_total_cartas % resultados_por_pagina or resultados_por_pagina
+
+        elif pagina == total_paginas and call.data.startswith("armazem_proxima_"):
+            print("Indo para a primeira página")
+            pagina = 1
+            offset = 0
+            limite = min(quantidade_total_cartas, resultados_por_pagina)
+
+        else:
+            if call.data.startswith("armazem_anterior_"):
+
+                pagina -= 1
+            elif call.data.startswith("armazem_ultima_"):
+
+                pagina += 5 
+            elif call.data.startswith("armazem_primeira_"):
+
+                pagina -= 5
+            elif call.data.startswith("armazem_proxima_"):
+
+                pagina += 1
+            offset = (pagina - 1) * resultados_por_pagina
+
+            
+        sql = f"""
+            SELECT id_personagem, emoji, nome_personagem, subcategoria, quantidade, categoria, evento
+            FROM (
+                SELECT i.id_personagem, p.emoji, p.nome AS nome_personagem, p.subcategoria, i.quantidade, p.categoria, '' AS evento
+                FROM inventario i
+                JOIN personagens p ON i.id_personagem = p.id_personagem
+                WHERE i.id_usuario = {id_usuario} AND i.quantidade > 0
+
+                UNION
+
+                SELECT e.id_personagem, e.emoji, e.nome AS nome_personagem, e.subcategoria, 0 AS quantidade, e.categoria, e.evento
+                FROM evento e
+                WHERE e.id_personagem IN (
+                    SELECT id_personagem
+                    FROM inventario
+                    WHERE id_usuario = {id_usuario} AND quantidade > 0
+                )
+            ) AS combined
+            ORDER BY 
+                CASE WHEN categoria = 'evento' THEN 0 ELSE 1 END, 
+                categoria, 
+                CAST(id_personagem AS UNSIGNED) ASC
+            LIMIT {limite} OFFSET {offset}
+        """
+        cursor.execute(sql)
+        resultados = cursor.fetchall()
+        if resultados:
+            markup = telebot.types.InlineKeyboardMarkup()
+            if quantidade_total_cartas > 10:
+                buttons_row = [
+                    telebot.types.InlineKeyboardButton("⏪️", callback_data=f"armazem_primeira_{pagina}_{id_usuario}"),
+                    telebot.types.InlineKeyboardButton("◀️", callback_data=f"armazem_anterior_{pagina}_{id_usuario}"),
+                    telebot.types.InlineKeyboardButton("▶️", callback_data=f"armazem_proxima_{pagina}_{id_usuario}"),
+                    telebot.types.InlineKeyboardButton("⏩️", callback_data=f"armazem_ultima_{pagina}_{id_usuario}")
+                ]
+                markup.row(*buttons_row)
+
+            # Obter favorito do usuário
+            id_fav_usuario, emoji_fav, nome_fav, imagem_fav = obter_favorito(id_usuario)
+
+            if id_fav_usuario is not None:
+                resposta = f"💌 | Cartas no armazém de {usuario}:\n\nFav: {emoji_fav} {id_fav_usuario} — {nome_fav}\n\n"
+
+            for carta in resultados:
+                id_carta = carta[0]
+                emoji_carta = carta[1]
+                nome_carta = carta[2]
+                subcategoria_carta = carta[3]
+                quantidade_carta = carta[4]
+                categoria_carta = carta[5]
+                evento_carta = carta[6]
+
+                if quantidade_carta is None:
+                    quantidade_carta = 0
+                else:
+                    quantidade_carta = int(quantidade_carta)
+
+                if categoria_carta == 'evento':
+                    emoji_carta = obter_emoji_evento(evento_carta)
+
+                if quantidade_carta == 1:
+                    letra_quantidade = ""
+                elif 2 <= quantidade_carta <= 4:
+                    letra_quantidade = "🌾"
+                elif 5 <= quantidade_carta <= 9:
+                    letra_quantidade = "🌼"
+                elif 10 <= quantidade_carta <= 19:
+                    letra_quantidade = "☀️"
+                elif 20 <= quantidade_carta <= 29:
+                    letra_quantidade = "🍯️"
+                elif 30 <= quantidade_carta <= 39:
+                    letra_quantidade = "🐝"
+                elif 40 <= quantidade_carta <= 49:
+                    letra_quantidade = "🌻"
+                elif 50 <= quantidade_carta <= 100:
+                    letra_quantidade = "👑"
+                elif 101 <= quantidade_carta:
+                    letra_quantidade = "👑"    
+                else:
+                    letra_quantidade = ""
+
+                repetida = " [+]" if quantidade_carta > 1 and categoria_carta == 'evento' else ""
+
+                resposta += f" {emoji_carta} <code>{id_carta}</code> • {nome_carta} - {subcategoria_carta} {letra_quantidade}{repetida}\n"
+
+            resposta += f"\n{pagina}/{total_paginas}"
+            bot.edit_message_caption(chat_id=chat_id, message_id=call.message.message_id, caption=resposta, reply_markup=markup, parse_mode="HTML")
+
+        else:
+            bot.answer_callback_query(callback_query_id=call.id, text="Nenhuma carta encontrada.")
+    except mysql.connector.Error as err:
+        print(f"Erro de SQL: {err}")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('peixes_'))
+def callback_peixes(call):
+    try:
+        parts = call.data.split('_')
+        pagina = int(parts[1])
+        subcategoria = parts[2]
+        
+        pagina_peixes_callback(call, pagina, subcategoria)
+    except Exception as e:
+        print(f"Erro ao processar callback de peixes: {e}")
+@bot.callback_query_handler(func=lambda call: call.data.startswith('pescar_'))
+def callback_pescar(call):
+    try:
+        categoria_callback(call)
+    except Exception as e:
+        print(f"Erro ao processar callback de pescar: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('subcategory_'))
+def callback_subcategory(call):
+    try:
+        subcategory_data = call.data.split("_")
+        subcategory = subcategory_data[1]
+        is_valentine = len(subcategory_data) > 2 and subcategory_data[2] == "valentine"
+        if is_valentine:
+            card = get_random_card_valentine(subcategory)
+        else:
+            categoria_handler(call.message, subcategory)
+        if card:
+            evento_aleatorio = card
+            send_card_message(call.message, evento_aleatorio)
+        else:
+            bot.reply_to(call.message, "Desculpe, não foi possível encontrar uma carta para essa subcategoria.")
+    except Exception as e:
+        print(f"Erro ao processar callback de subcategoria: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('choose_subcategoria_'))
+def callback_choose_subcategoria(call):
+    try:
+        data = call.data.split('_')
+        subcategoria = data[1]
+        chat_id = call.message.chat.id
+        message_id = call.message.message_id
+        choose_subcategoria_callback(call, subcategoria, chat_id, message_id)
+    except Exception as e:
+        print(f"Erro ao processar callback de escolha de subcategoria: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('cenourar_sim_'))
+def callback_cenourar(call):
+    try:
+        data_parts = call.data.split("_")
+        acao = data_parts[1]
+        id_usuario = int(data_parts[2])
+        id_personagens = data_parts[3] if len(data_parts) > 3 else ""
+
+        if acao == "sim":
+            cenourar_carta(call, id_usuario, id_personagens)
+        elif acao == "nao":
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Operação de cenoura cancelada.")
+    except Exception as e:
+        print(f"Erro ao processar callback de cenoura: {e}")
+        bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Erro ao processar a cenoura.")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('loja_geral'))
+def callback_loja_geral(call):
+    try:
+        loja_geral_callback(call)
+    except Exception as e:
+        print(f"Erro ao processar callback de loja geral: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('img_'))
+def callback_img_peixes_handler(call):
+    try:
+        dados = call.data.split('_')
+        pagina = int(dados[-2])
+        subcategoria = dados[-1]
+        callback_img_peixes(call, pagina, subcategoria)
+    except Exception as e:
+        print(f"Erro ao processar callback 'img' de peixes: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('peixes_'))
+def callback_peixes(call):
+    try:
+        dados = call.data.split('_')
+        pagina = int(dados[-2])
+        subcategoria = dados[-1]
+        pagina_peixes_callback(call, pagina, subcategoria)
+    except Exception as e:
+        print(f"Erro ao processar callback de peixes: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("tag_"))
+def callback_tag(call):
+    try:
+        parts = call.data.split('_')
+        pagina = int(parts[1])
+        nometag = parts[2]
+        id_usuario = call.from_user.id
+        editar_mensagem_tag(call.message, nometag, pagina, id_usuario)
+    except Exception as e:
+        print(f"Erro ao processar callback de página para a tag: {e}")
+
+  @bot.callback_query_handler(func=lambda call: call.data.startswith('loja_compras'))
+def callback_loja_compras(call):
+    try:
+        message_data = call.data.replace('loja_', '')
+        if message_data:
+            conn, cursor = conectar_banco_dados()
+            id_usuario = call.from_user.id
+            cursor.execute("SELECT cenouras FROM usuarios WHERE id_usuario = %s", (id_usuario,))
+            result = cursor.fetchone()
+
+            imagem_url = 'https://telegra.ph/file/a4c194082eab84886cbd4.jpg'
+            original_message_id = call.message.message_id
+
+            keyboard = telebot.types.InlineKeyboardMarkup()
+            primeira_coluna = [
+                telebot.types.InlineKeyboardButton(text="🐟 Comprar Iscas", callback_data='compras_iscas_callback')
+            ]
+            segunda_coluna = [
+                telebot.types.InlineKeyboardButton(text="🥕 Doar Cenouras", callback_data=f'doar_cenoura_{id_usuario}_{original_message_id}')
+            ]
+            keyboard.row(*primeira_coluna)
+            keyboard.row(*segunda_coluna)
+
+            if result:
+                qnt_cenouras = int(result[0])
+            else:
+                qnt_cenouras = 0
+
+            mensagem = f"🐇 Bem vindo a nossa lojinha. O que você quer levar?\n\n🥕 Saldo Atual: {qnt_cenouras}"
+            bot.edit_message_caption(chat_id=call.message.chat.id, message_id=original_message_id, caption=mensagem, reply_markup=keyboard)
+        else:
+            bot.reply_to(call.message, "Erro ao processar comando.")
+    except Exception as e:
+        print(f"Erro ao processar comando: {e}")
+    finally:
+        cursor.close()
+        conn.close()
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('compras_iscas_'))
+def callback_compras_iscas(call):
+    try:
+        compras_iscas_callback(call)
+    except Exception as e:
+        print(f"Erro ao processar callback de compras iscas: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('tcancelar'))
+def callback_tcancelar(call):
+    try:
+        data = call.data.split('_')
+        destinatario_id = int(data[1])
+        if destinatario_id == call.from_user.id:
+            bot.delete_message(call.message.chat.id, call.message.message_id)
+        else:
+            bot.answer_callback_query(callback_query_id=call.id, text="Você não pode aceitar esta doação.")
+    except Exception as e:
+        print(f"Erro ao processar callback de cancelar: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirmar_doacao_'))
+def callback_confirmar_doacao(call):
+    try:
+        data = call.data.split('_')
+        if len(data) >= 6:
+            destinatario_id = int(data[4])
+            if destinatario_id != call.from_user.id:
+                eu = int(data[2])
+                minhacarta = int(data[3])
+                destinatario_id = int(data[4])
+                qnt = int(data[5])
+                confirmar_doacao(eu, minhacarta, destinatario_id, call.message.chat.id, call.message.message_id, qnt)
+            else:
+                bot.answer_callback_query(callback_query_id=call.id, text="Você não pode aceitar esta doação.")
+        else:
+            bot.send_message(call.message.chat.id, "O formato da mensagem de confirmação está incorreto.")
+    except Exception as e:
+        print(f"Erro ao processar callback de confirmação de doação: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('aprovar_'))
+def callback_aprovar(call):
+    try:
+        aprovar_callback(call)
+    except Exception as e:
+        print(f"Erro ao processar callback de aprovação: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('reprovar_'))
+def callback_reprovar(call):
+    try:
+        reprovar_callback(call)
+    except Exception as e:
+        print(f"Erro ao processar callback de reprovação: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('repor_'))
+def callback_repor(call):
+    try:
+        quantidade = 1
+        message_data = call.data
+        parts = message_data.split('_')
+        id_usuario = parts[1]
+        adicionar_iscas(id_usuario, quantidade, call.message)
+    except Exception as e:
+        print(f"Erro ao processar callback de reposição: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('loja_loja'))
+def callback_loja_loja(call):
+    try:
+        message_data = call.data.replace('loja_', '')
+        if message_data == "loja":
+            data_atual = datetime.today().strftime("%Y-%m-%d")
+            id_usuario = call.from_user.id
+            ids_do_dia = obter_ids_loja_do_dia(data_atual)
+            imagem_url = 'https://telegra.ph/file/a60b21f603ad26eb8608a.jpg'
+            original_message_id = call.message.message_id
+            keyboard = telebot.types.InlineKeyboardMarkup()
+            primeira_coluna = [
+                telebot.types.InlineKeyboardButton(text="☁️", callback_data=f'compra_musica_{id_usuario}_{original_message_id}'),
+                telebot.types.InlineKeyboardButton(text="🍄", callback_data=f'compra_series_{id_usuario}_{original_message_id}'),
+                telebot.types.InlineKeyboardButton(text="🍰", callback_data=f'compra_filmes_{id_usuario}_{original_message_id}')
+            ]
+            segunda_coluna = [
+                telebot.types.InlineKeyboardButton(text="🍂", callback_data=f'compra_miscelanea_{id_usuario}_{original_message_id}'),
+                telebot.types.InlineKeyboardButton(text="🧶", callback_data=f'compra_jogos_{id_usuario}_{original_message_id}'),
+                telebot.types.InlineKeyboardButton(text="🌷", callback_data=f'compra_animanga_{id_usuario}_{original_message_id}')
+            ]
+            keyboard.row(*primeira_coluna)
+            keyboard.row(*segunda_coluna)
+
+            mensagem = "𝐀𝐡, 𝐨𝐥𝐚́! 𝐕𝐨𝐜𝐞̂ 𝐜𝐡𝐞𝐠𝐨𝐮 𝐧𝐚 𝐡𝐨𝐫𝐚 𝐜𝐞𝐫𝐭𝐚! \n\nNosso pescador acabou de chegar com os peixes fresquinhos de hoje:\n\n"
+
+            for carta_id in ids_do_dia:
+                id_personagem, emoji, nome, subcategoria = obter_informacoes_carta(carta_id)
+                mensagem += f"{emoji} - {nome} de {subcategoria}\n"
+
+            bot.edit_message_media(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                reply_markup=keyboard,
+                media=telebot.types.InputMediaPhoto(media=imagem_url, caption=mensagem)
+            )
+    except Exception as e:
+        print(f"Erro ao processar loja_loja_callback: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('compra_'))
+def callback_compra(call):
+    try:
+        chat_id = call.message.chat.id
+        parts = call.data.split('_')
+        categoria = parts[1]
+        id_usuario = parts[2]
+        original_message_id = parts[3]
+        conn, cursor = conectar_banco_dados()
+        cursor.execute("SELECT cenouras FROM usuarios WHERE id_usuario = %s", (id_usuario,))
+        result = cursor.fetchone()
+
+        if result:
+            qnt_cenouras = int(result[0])
+        else:
+            qnt_cenouras = 0
+
+        if qnt_cenouras >= 5:
+            cursor.execute(
+                "SELECT loja.id_personagem, personagens.nome, personagens.subcategoria, personagens.emoji "
+                "FROM loja "
+                "JOIN personagens ON loja.id_personagem = personagens.id_personagem "
+                "WHERE loja.categoria = %s AND loja.data = %s ORDER BY RAND() LIMIT 1",
+                (categoria, datetime.today().strftime("%Y-%m-%d"))
+            )
+            carta_comprada = cursor.fetchone()
+
+            if carta_comprada:
+                id_personagem, nome, subcategoria, emoji = carta_comprada
+                mensagem = f"Você tem {qnt_cenouras} cenouras. \nDeseja usar 5 para comprar o seguinte peixe: \n\n{emoji} {id_personagem} - {nome} \nde {subcategoria}?"
+                keyboard = telebot.types.InlineKeyboardMarkup()
+                keyboard.row(
+                    telebot.types.InlineKeyboardButton(text="Sim", callback_data=f'confirmar_compra_{categoria}_{id_usuario}'),
+                    telebot.types.InlineKeyboardButton(text="Não", callback_data='cancelar_compra')
+                )
+                imagem_url = "https://telegra.ph/file/d4d5d0af60ec66f35e29c.jpg"
+                bot.edit_message_media(
+                    chat_id=chat_id,
+                    message_id=original_message_id,
+                    reply_markup=keyboard,
+                    media=telebot.types.InputMediaPhoto(media=imagem_url, caption=mensagem)
+                )
+            else:
+                print(f"Nenhuma carta disponível para compra na categoria {categoria} hoje.")
+        else:
+            print("Usuário não tem cenouras suficientes para comprar.")
+    except Exception as e:
+        print(f"Erro ao processar a compra: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirmar_compra_'))
+def callback_confirmar_compra(call):
+    try:
+        parts = call.data.split('_')
+        categoria = parts[2]
+        id_usuario = parts[3]
+        data_atual = datetime.today().strftime("%Y-%m-%d")
+        conn, cursor = conectar_banco_dados()
+        cursor.execute(
+            "SELECT p.id_personagem, p.nome, p.subcategoria, p.imagem, p.emoji "
+            "FROM loja AS l "
+            "JOIN personagens AS p ON l.id_personagem = p.id_personagem "
+            "WHERE l.categoria = %s AND l.data = %s ORDER BY RAND() LIMIT 1",
+            (categoria, data_atual)
+        )
+        carta_comprada = cursor.fetchone()
+
+        if carta_comprada:
+            id_personagem, nome, subcategoria, imagem, emoji = carta_comprada
+            mensagem = f"𝐂𝐨𝐦𝐩𝐫𝐚 𝐟𝐞𝐢𝐭𝐚 𝐜𝐨𝐦 𝐬𝐮𝐜𝐞𝐬𝐬𝐨! \n\nO seguinte peixe foi adicionado à sua cesta: \n\n{emoji} {id_personagem} • {nome}\nde {subcategoria}\n\n𝐕𝐨𝐥𝐭𝐞 𝐬𝐞𝐦𝐩𝐫𝐞!"
+            add_to_inventory(id_usuario, id_personagem)
+            diminuir_cenouras(id_usuario, 5)
+
+            bot.edit_message_media(
+                chat_id=call.message.chat.id,
+                message_id=call.message.message_id,
+                media=telebot.types.InputMediaPhoto(media=imagem, caption=mensagem)
+            )
+        else:
+            print(f"Nenhuma carta disponível para compra na categoria {categoria} hoje.")
+    except Exception as e:
+        print(f"Erro ao processar a compra: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
