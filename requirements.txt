@@ -1,0 +1,5 @@
+pyTelegramBotAPI==4.4.0
+mysql-connector-python==8.0.28
+requests==2.25.1
+Pillow==8.4.0
+python-Levenshtein==0.12.2

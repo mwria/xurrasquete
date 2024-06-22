@@ -3,7 +3,7 @@ from user import *
 from bd import *
 from loja import *
 from gnome import *
-from cenourar import update_cartas_counters
+from cenourar import *
 
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('total_'))

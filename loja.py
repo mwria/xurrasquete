@@ -28,7 +28,6 @@ def obter_ids_loja_do_dia(data_atual):
             (data_atual, ','.join(f"'{cat}'" for cat in ordem_categorias.keys()))
         )
         ids_do_dia = [id_tuple[0] for id_tuple in cursor.fetchall()]
-        print(ids_do_dia)
         return ids_do_dia
     except mysql.connector.Error as err:
         print(f"Erro ao obter IDs da loja para o dia de hoje: {err}")

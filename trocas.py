@@ -12,28 +12,20 @@ from operacoes import *
 from sub import *
 from armazem import *
 from wish import *
-from cenourar import *
 from pescar import *
 
 def realizar_troca(message, eu, voce, minhacarta, suacarta, chat_id, qntminha_antes, qntsua_antes):
     try:
-        print("Variáveis recebidas:")
-        print("eu:", eu)
-        print("voce:", voce)
-        print("minhacarta:", minhacarta)
-        print("suacarta:", suacarta)
-        print("chatid:", chat_id)
+
 
         conn, cursor = conectar_banco_dados()
         cursor.execute("SELECT quantidade FROM inventario WHERE id_usuario = %s AND id_personagem = %s",
                        (eu, minhacarta))
         qntminha = cursor.fetchone()
-        print(qntminha)
-        print(cursor.fetchone())
+
         cursor.execute("SELECT quantidade FROM inventario WHERE id_usuario = %s AND id_personagem = %s",
                        (voce, suacarta))
-        qntsua = cursor.fetchone()
-        print(cursor.fetchone())
+
         qntminha = functools.reduce(lambda sub, ele: sub * 10 + ele, qntminha) if qntminha else 0
         qntsua = functools.reduce(lambda sub, ele: sub * 10 + ele, qntsua) if qntsua else 0
 
@@ -89,3 +81,5 @@ def realizar_troca(message, eu, voce, minhacarta, suacarta, chat_id, qntminha_an
             )
     except mysql.connector.Error as err:
         bot.edit_message_caption(chat_id=message.chat.id, caption="Houve um problema com a troca, tente novamente!")
+    finally:
+        fechar_conexao(cursor, conn)

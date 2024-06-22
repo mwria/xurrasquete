@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from datetime import date
 from telebot import types
 
-bot = telebot.TeleBot("7088149058:AAEnXEEGhCwU6-BlNcTgghAbtK0L-HWB2J4")
+bot = telebot.TeleBot("6723799817:AAFmSoj3IixvhZQuhSuai6VWNIpGXEviit8")
 def db_config():
     return {
         'host': '127.0.0.1',

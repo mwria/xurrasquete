@@ -43,7 +43,6 @@ def verifica_inventario(id_usuario, id_personagem):
     query = f"SELECT quantidade FROM inventario WHERE id_usuario = {id_usuario} AND id_personagem = {id_personagem}"
     cursor.execute(query)
     quantidade_total = cursor.fetchone()[0]
-    print(quantidade_total)
     return quantidade_total > 29
 
 def verifica_inventario_troca(id_usuario, id_personagem):

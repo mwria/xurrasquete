@@ -7,7 +7,7 @@ from operacoes import *
 
 def add_to_inventory(id_usuario, id_personagem):
     try:
-        print(f"Carta {id_personagem} adicionada ao inventario de {id_usuario}")
+
         conn, cursor = conectar_banco_dados()
         cursor.execute("SELECT quantidade FROM inventario WHERE id_usuario = %s AND id_personagem = %s",
                        (id_usuario, id_personagem))
