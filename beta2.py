@@ -4,12 +4,14 @@ import random
 import requests
 import time
 import datetime
+from math import ceil
+
 from telebot.types import InputMediaPhoto
 import datetime as dt_module  
 from datetime import datetime, timedelta
 import re
 from datetime import date
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 import io
 from io import BytesIO
 from telebot import types
@@ -22,16 +24,41 @@ import os
 import Levenshtein
 from mysql.connector import Error
 import re
-from evento import *
 import time
 import threading
+from album import *
 from pescar import *
-
+import diskcache as dc
 # Sinalizador global para controlar o processamento de callbacks
 processing_lock = threading.Lock()
 
 # garden
 bot = telebot.TeleBot("6723799817:AAFmSoj3IixvhZQuhSuai6VWNIpGXEviit8")
+
+# Lista de IDs proibidos
+ids_proibidos = {164, 165, 163, 174, 192, 214, 215, 216}
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
+from apscheduler.schedulers.background import BackgroundScheduler
+from pytz import utc
+
+# Configurando o scheduler
+scheduler = BackgroundScheduler(timezone=utc)
+scheduler.start()
+# Configurar as credenciais do Spotify
+SPOTIFY_CLIENT_ID = '804047efa98c4d1d81da250b0770c05d'
+SPOTIFY_CLIENT_SECRET = '6deb00cb4cea42f79abe41cc4da05f13'
+ALBUM_PATH = 'album.png'
+BACKGROUND_URL = 'https://i.pinimg.com/564x/19/a5/b0/19a5b0b149cd1a26f3fa7766061e902c.jpg'
+BORDER_COLOR = '#DE3163'
+CACHE_DIR = 'sticker_cache'
+import diskcache as dc
+# Verifique se o diretório de cache existe
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
+# Configurar autenticação do Spotify
+sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET))
+cache = dc.Cache('./cache')  # Configuração do caminho do cache
 # Dicionário para armazenar os peixes divididos por página
 dict_peixes_por_pagina = {}
 # Dicionário para rastrear a página atual de cada usuário
@@ -141,7 +168,51 @@ def conectar_banco_dados():
             time.sleep(5)
 
 conn, cursor = conectar_banco_dados()
+# Dicionário para armazenar os estados baseados no chat_id
+state_data = {}
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith("change_page_"))
+def handle_page_change(call):
+    page_index = int(call.data.split("_")[2])
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+
+    data = state_data.get(chat_id)
+    if not data:
+        bot.answer_callback_query(call.id, "Dados não encontrados.")
+        return
+
+    if isinstance(data, list):
+        mensagens = data
+    else:
+        bot.answer_callback_query(call.id, "Erro no formato dos dados.")
+        return
+
+    total_count = len(mensagens)
+    if 0 <= page_index < total_count:
+        media_url, mensagem = mensagens[page_index]
+        markup = create_navigation_markup(page_index, total_count)
+
+        try:
+            update_message_media(media_url, mensagem, chat_id, message_id, markup)
+            bot.answer_callback_query(call.id)
+        except Exception as e:
+            bot.answer_callback_query(call.id, "Falha ao atualizar a mensagem.")
+    else:
+        bot.answer_callback_query(call.id, "Índice de página inválido.")
+
+def update_message_media(media_url, mensagem, chat_id, message_id, markup):
+    if media_url.lower().endswith(".gif"):
+        bot.edit_message_media(media=types.InputMediaAnimation(media_url, caption=mensagem,parse_mode="HTML"), chat_id=chat_id, message_id=message_id, reply_markup=markup)
+    elif media_url.lower().endswith(".mp4"):
+        bot.edit_message_media(media=types.InputMediaVideo(media_url, caption=mensagem,parse_mode="HTML"), chat_id=chat_id, message_id=message_id, reply_markup=markup)
+    elif media_url.lower().endswith((".jpeg", ".jpg", ".png")):
+        bot.edit_message_media(media=types.InputMediaPhoto(media_url, caption=mensagem,parse_mode="HTML"), chat_id=chat_id, message_id=message_id, reply_markup=markup)
+    else:
+        bot.edit_message_text(text=mensagem, chat_id=chat_id, message_id=message_id, reply_markup=markup,parse_mode="HTML")
+
+def save_user_state(chat_id, data):
+    state_data[chat_id] = data
 @bot.callback_query_handler(func=lambda call: call.data.startswith('submenu_'))
 def callback_submenu(call):
     _, subcategoria, submenu_selecionado = call.data.split('_')
@@ -209,6 +280,595 @@ def callback_help(call):
         )
     
     bot.edit_message_text(help_text, chat_id=call.message.chat.id, message_id=call.message.message_id, parse_mode="HTML")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("lembrete_"))
+def callback_query_lembrete(call):
+    data_parts = call.data.split('_')
+    tipo = data_parts[1]
+    id_usuario = int(data_parts[2])
+    ativar = data_parts[3] == 'True'
+    
+    conn, cursor = conectar_banco_dados()
+    
+    if tipo == "fonte":
+        cursor.execute("UPDATE lembretes SET fonte = %s WHERE id_usuario = %s", (ativar, id_usuario))
+    elif tipo == "gif":
+        cursor.execute("UPDATE lembretes SET gif = %s WHERE id_usuario = %s", (ativar, id_usuario))
+        if ativar:
+            verifica_tempo_ultimo_gif(id_usuario)
+    elif tipo == "diary":
+        cursor.execute("UPDATE lembretes SET diary = %s WHERE id_usuario = %s", (ativar, id_usuario))
+    
+    conn.commit()
+    fechar_conexao(cursor, conn)
+    
+    # Retrieve the updated preferences to display
+    lembrete_command(call)  # Adjusted to pass 'call' directly
+    
+@bot.message_handler(commands=['casar'])
+def processar_comando_casar(message):
+    try:
+        command_parts = message.text.split()
+        if len(command_parts) != 2:
+            bot.reply_to(message, "Por favor, forneça o ID do personagem no formato '/casar id_personagem'.")
+            return
+
+        id_personagem = command_parts[1]
+
+        # Verificar se o ID do personagem está na lista proibida
+        if int(id_personagem) in ids_proibidos:
+            bot.reply_to(message, "Você não pode se casar com esse personagem.")
+            return
+
+        conn, cursor = conectar_banco_dados()
+        query = "SELECT nome, evento FROM evento WHERE id_personagem = %s"
+        cursor.execute(query, (id_personagem,))
+        resultado = cursor.fetchone()
+
+        if resultado and resultado[1] == 'amor':
+            nome = resultado[0]
+
+            user_id = message.from_user.id
+
+            # Verificar se o usuário já está casado ou já foi rejeitado pelo personagem
+            cursor.execute("SELECT estado FROM casamentos WHERE user_id = %s AND id_personagem = %s", (user_id, id_personagem))
+            casamento = cursor.fetchone()
+
+            if casamento:
+                if casamento[0] == 'casado':
+                    bot.reply_to(message, "Você já está casado com este personagem.")
+                    fechar_conexao(cursor, conn)
+                    return
+                elif casamento[0] == 'divorciado':
+                    bot.reply_to(message, "Este personagem já te rejeitou uma vez. Você não pode pedir novamente.")
+                    fechar_conexao(cursor, conn)
+                    return
+
+            # Verificar se o usuário já está casado com outro personagem
+            cursor.execute("SELECT COUNT(*) FROM casamentos WHERE user_id = %s AND estado = 'casado'", (user_id,))
+            ja_casado = cursor.fetchone()[0]
+
+            if ja_casado > 0:
+                bot.reply_to(message, "Você já está casado. Não pode se casar novamente.")
+                fechar_conexao(cursor, conn)
+                return
+
+            # Perguntar ao usuário se deseja casar
+            markup = InlineKeyboardMarkup()
+            markup.row_width = 2
+            markup.add(InlineKeyboardButton("Sim", callback_data=f"casar_sim_{id_personagem}_{nome}"),
+                       InlineKeyboardButton("Não", callback_data="casar_nao"))
+
+            bot.reply_to(message, f"Na alegria e na tristeza, na saúde e na doença, todos os dias da sua vida! Tem certeza que deseja se casar com {id_personagem} - {nome}?", reply_markup=markup)
+
+        else:
+            bot.reply_to(message, "Personagem não encontrado ou não é do tipo 'amor'.")
+
+        fechar_conexao(cursor, conn)
+
+    except Exception as e:
+        bot.reply_to(message, f"Erro ao processar o comando /casar: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('casar_'))
+def callback_casar(call):
+    try:
+        if call.data.startswith("casar_sim"):
+            _, _, id_personagem, nome = call.data.split('_')
+            user_id = call.from_user.id
+
+            if random.random() < 0.7:
+                # Sucesso no casamento
+                conn, cursor = conectar_banco_dados()
+                query = "INSERT INTO casamentos (user_id, id_personagem, estado) VALUES (%s, %s, 'casado')"
+                cursor.execute(query, (user_id, id_personagem))
+                conn.commit()
+                fechar_conexao(cursor, conn)
+                bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"Parabéns! Você agora está casado com {nome}!")
+            else:
+                # Falha no casamento
+                conn, cursor = conectar_banco_dados()
+                query = "INSERT INTO casamentos (user_id, id_personagem, estado) VALUES (%s, %s, 'divorciado')"
+                cursor.execute(query, (user_id, id_personagem))
+                conn.commit()
+                fechar_conexao(cursor, conn)
+                bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=f"Infelizmente, {nome} rejeitou seu pedido de casamento.")
+        elif call.data == "casar_nao":
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text="Pedido de casamento cancelado.")
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"Erro ao processar o callback de casamento: {e}")
+
+@bot.message_handler(commands=['divorciar'])
+def processar_comando_divorciar(message):
+    try:
+        user_id = message.from_user.id
+
+        conn, cursor = conectar_banco_dados()
+
+        # Verificar se o usuário está casado
+        cursor.execute("SELECT id_personagem FROM casamentos WHERE user_id = %s AND estado = 'casado'", (user_id,))
+        casamento = cursor.fetchone()
+
+        if casamento:
+            id_personagem = casamento[0]
+
+            # Verificar se já se divorciou uma vez
+            cursor.execute("SELECT COUNT(*) FROM casamentos WHERE user_id = %s AND estado = 'divorciado'", (user_id,))
+            divorcios = cursor.fetchone()[0]
+
+            if divorcios > 0:
+                bot.reply_to(message, "Você já se divorciou uma vez e não pode se divorciar novamente.")
+            else:
+                # Atualizar estado para divorciado
+                cursor.execute("UPDATE casamentos SET estado = 'divorciado' WHERE user_id = %s AND id_personagem = %s", (user_id, id_personagem))
+                conn.commit()
+                bot.reply_to(message, f"Você se divorciou de {id_personagem}. Agora você pode casar novamente.")
+
+        else:
+            bot.reply_to(message, "Você não está casado.")
+
+        fechar_conexao(cursor, conn)
+
+    except Exception as e:
+        bot.reply_to(message, f"Erro ao processar o comando /divorciar: {e}")
+
+def notificar_usuario_sobre_gif(id_usuario):
+    bot.send_message(id_usuario, "Você já pode pedir gif!")
+
+def agendar_notificacao_de_gif(id_usuario):
+    # Calcula quando enviar a notificação (1 hora após o último gif)
+    proxima_notificacao = datetime.now() + timedelta(hours=1)
+    scheduler.add_job(notificar_usuario_sobre_gif, 'date', run_date=proxima_notificacao, args=[id_usuario])
+
+def enviar_lembrete_diary():
+    conn, cursor = conectar_banco_dados()
+    
+    # Seleciona todos os usuários que ativaram o lembrete 'diary'
+    cursor.execute("SELECT id_usuario FROM lembretes WHERE diary = TRUE")
+    usuarios = cursor.fetchall()
+    
+    for usuario in usuarios:
+        user_id = usuario[0]
+        try:
+            bot.send_message(user_id, "Não esqueça de registrar seu diário hoje! Use o comando /diary.")
+        except Exception as e:
+            print(f"Não foi possível enviar a mensagem para o usuário {user_id}: {e}")
+    
+    fechar_conexao(cursor, conn)
+
+# Agendando a tarefa para ser executada todos os dias à meia-noite
+scheduler.add_job(enviar_lembrete_diary, 'cron', hour=0, minute=0)     
+def verifica_tempo_ultimo(id_usuario):
+    conn, cursor = conectar_banco_dados()
+    try:
+        # Verifica se a configuração de gif está ativada
+        cursor.execute("SELECT gif FROM lembretes WHERE id_usuario = %s", (id_usuario,))
+        config = cursor.fetchone()
+
+        if config and config[0] == 1:
+            cursor.execute("SELECT MAX(timestamp) FROM gif WHERE id_usuario = %s", (id_usuario,))
+            ultimo_gif = cursor.fetchone()
+
+            if ultimo_gif and ultimo_gif[0]:
+                ultimo_gif_datetime = ultimo_gif[0]
+                diferenca_tempo = datetime.now() - ultimo_gif_datetime
+
+                if diferenca_tempo.total_seconds() >= 3600:
+                    notificar_usuario_sobre_gif(id_usuario)
+                else:
+                    tempo_restante = 3600 - diferenca_tempo.total_seconds()
+                    # Agendar notificação para quando completar 1 hora
+                    scheduler.add_job(notificar_usuario_sobre_gif, 'date', run_date=datetime.now() + timedelta(seconds=tempo_restante), args=[id_usuario])
+
+    except Exception as e:
+        print(f"Erro ao verificar tempo do último gif: {e}")
+    finally:
+        fechar_conexao(cursor, conn)
+   
+@bot.message_handler(commands=['trade'])
+def trade_stickers(message):
+    user_id = message.from_user.id
+    reply_to_message = message.reply_to_message
+
+    if not reply_to_message:
+        bot.send_message(message.chat.id, "Você deve responder a uma mensagem da pessoa com quem deseja trocar figurinhas.")
+        return
+
+    other_user_id = reply_to_message.from_user.id
+    trade_info = message.text.split()[1:]
+
+    if len(trade_info) != 2:
+        bot.send_message(message.chat.id, "Formato inválido. Use /trade luv{seu_numero} luv{numero_outro_usuario}")
+        return
+
+    try:
+        user_sticker_id = int(''.join(filter(str.isdigit, trade_info[0])))
+        other_sticker_id = int(''.join(filter(str.isdigit, trade_info[1])))
+    except ValueError:
+        bot.send_message(message.chat.id, "Os IDs das figurinhas devem conter números. Use /trade luv{seu_numero} luv{numero_outro_usuario}")
+        return
+
+    # Verifique se ambos os usuários têm as figurinhas repetidas
+    if not has_repeated_sticker(user_id, user_sticker_id):
+        bot.send_message(message.chat.id, "Essa figurinha já foi colada e não pode ser trocada.")
+        return
+
+    if not has_repeated_sticker(other_user_id, other_sticker_id):
+        bot.send_message(message.chat.id, "Essa figurinha do outro usuário já foi colada e não pode ser trocada.")
+        return
+
+    # Criar botões para a outra pessoa aceitar ou recusar a troca
+    markup = types.InlineKeyboardMarkup()
+    accept_button = types.InlineKeyboardButton("Aceitar Troca", callback_data=f"accept_trade_{user_sticker_id}_{other_sticker_id}_{user_id}_{other_user_id}")
+    decline_button = types.InlineKeyboardButton("Recusar Troca", callback_data=f"decline_trade_{user_sticker_id}_{other_sticker_id}_{user_id}_{other_user_id}")
+    markup.add(accept_button, decline_button)
+
+    bot.send_message(reply_to_message.chat.id, f"{reply_to_message.from_user.first_name}, {message.from_user.first_name} quer trocar a figurinha {user_sticker_id} pela sua figurinha {other_sticker_id}.", reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('accept_trade_'))
+def accept_trade(call):
+    data = call.data.split('_')
+    user_sticker_id = int(data[2])
+    other_sticker_id = int(data[3])
+    requester_id = int(data[4])
+    accepter_id = int(data[5])
+
+    if call.from_user.id != accepter_id:
+        bot.answer_callback_query(call.id, "Você não tem permissão para aceitar essa troca.")
+        return
+
+    # Realizar a troca
+    try:
+        if execute_trade(requester_id, accepter_id, user_sticker_id, other_sticker_id):
+            bot.send_message(call.message.chat.id, "Troca realizada com sucesso!")
+        else:
+            bot.send_message(call.message.chat.id, "Erro ao realizar a troca. Tente novamente mais tarde.")
+    except Exception as e:
+        bot.send_message(call.message.chat.id, f"Erro ao realizar a troca: {e}")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('decline_trade_'))
+def decline_trade(call):
+    data = call.data.split('_')
+    user_sticker_id = int(data[2])
+    other_sticker_id = int(data[3])
+    requester_id = int(data[4])
+    accepter_id = int(data[5])
+
+    if call.from_user.id != accepter_id:
+        bot.answer_callback_query(call.id, "Você não tem permissão para recusar essa troca.")
+        return
+
+    bot.send_message(call.message.chat.id, "Troca recusada.")
+@bot.callback_query_handler(func=lambda call: call.data == "lembretes")
+def lembrete_command(call):
+    id_usuario = call.from_user.id
+    
+    conn, cursor = conectar_banco_dados()
+    
+    # Verificar se o usuário já tem registros na tabela de lembretes
+    cursor.execute("SELECT fonte, gif, diary FROM lembretes WHERE id_usuario = %s", (id_usuario,))
+    lembretes = cursor.fetchone()
+    
+    if not lembretes:
+        # Se não existir, criar um novo registro com valores padrão desativados
+        cursor.execute("INSERT INTO lembretes (id_usuario, fonte, gif, diary) VALUES (%s, %s, %s, %s)", (id_usuario, False, False, False))
+        conn.commit()
+        lembretes = (False, False, False)
+    
+    fonte, gif, diary = lembretes
+
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(f"Fonte {'✅' if fonte else '❌'}", callback_data=f"lembrete_fonte_{id_usuario}_{not fonte}"))
+    markup.add(InlineKeyboardButton(f"GIF {'✅' if gif else '❌'}", callback_data=f"lembrete_gif_{id_usuario}_{not gif}"))
+    markup.add(InlineKeyboardButton(f"Diary {'✅' if diary else '❌'}", callback_data=f"lembrete_diary_{id_usuario}_{not diary}"))
+    
+    bot.edit_message_text("Escolha suas preferências de lembrete:", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    
+    fechar_conexao(cursor, conn)
+
+
+def has_repeated_sticker(user_id, sticker_id):
+    conn, cursor = conectar_banco_dados()
+    cursor.execute('''
+        SELECT quantity 
+        FROM inventariofig 
+        WHERE user_id = %s AND sticker_id = %s
+    ''', (user_id, sticker_id))
+    result = cursor.fetchone()
+    cursor.close()
+    conn.close()
+    return result and result[0] > 1
+
+def execute_trade(requester_id, accepter_id, requester_sticker_id, accepter_sticker_id):
+    conn, cursor = conectar_banco_dados()
+
+    try:
+        # Verificar novamente se ambos têm mais de uma unidade das figurinhas
+        cursor.execute('''
+            SELECT quantity 
+            FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (requester_id, requester_sticker_id))
+        requester_quantity = cursor.fetchone()[0]
+
+        cursor.execute('''
+            SELECT quantity 
+            FROM inventariofig 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (accepter_id, accepter_sticker_id))
+        accepter_quantity = cursor.fetchone()[0]
+
+        if requester_quantity < 2 or accepter_quantity < 2:
+            raise Exception("Uma das figurinhas não é repetida e não pode ser trocada.")
+
+        # Remover uma figurinha do solicitante
+        cursor.execute('''
+            UPDATE inventariofig 
+            SET quantity = quantity - 1 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (requester_id, requester_sticker_id))
+
+        # Adicionar a figurinha ao solicitante
+        cursor.execute('''
+            INSERT INTO inventariofig (user_id, sticker_id, quantity)
+            VALUES (%s, %s, 1)
+            ON DUPLICATE KEY UPDATE
+            quantity = quantity + 1
+        ''', (requester_id, accepter_sticker_id))
+
+        # Remover uma figurinha do aceito
+        cursor.execute('''
+            UPDATE inventariofig 
+            SET quantity = quantity - 1 
+            WHERE user_id = %s AND sticker_id = %s
+        ''', (accepter_id, accepter_sticker_id))
+
+        # Adicionar a figurinha ao aceito
+        cursor.execute('''
+            INSERT INTO inventariofig (user_id, sticker_id, quantity)
+            VALUES (%s, %s, 1)
+            ON DUPLICATE KEY UPDATE
+            quantity = quantity + 1
+        ''', (accepter_id, requester_sticker_id))
+
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        print(f"Erro ao realizar a troca: {e}")
+        return False
+    finally:
+        cursor.close()
+        conn.close()
+        
+@bot.message_handler(commands=['album'])
+def send_album(message):
+    user_id = message.from_user.id
+    page = 1  # Página inicial
+
+    
+    album_path = create_album(user_id, page)
+    if album_path:
+        with open(album_path, 'rb') as photo:
+            bot.send_photo(message.chat.id, photo, reply_markup=get_navigation_markup(page))
+    else:
+        bot.send_message(message.chat.id, "Houve um erro ao gerar o álbum. Tente novamente mais tarde.")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('page_'))
+def callback_page(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[1])
+    album_path = create_album(user_id, page)
+    
+    if album_path:
+        with open(album_path, 'rb') as photo:
+            bot.edit_message_media(media=telebot.types.InputMediaPhoto(photo), chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=get_navigation_markup(page))
+    else:
+        bot.send_message(call.message.chat.id, "Houve um erro ao atualizar o álbum. Tente novamente mais tarde.")
+
+@bot.message_handler(commands=['figurinhas'])
+def send_random_stickers(message):
+    try:
+        user_id = message.from_user.id
+        conn, cursor = conectar_banco_dados()
+
+        # Selecionar 5 figurinhas aleatórias, permitindo repetidas
+        cursor.execute('SELECT id, image_path FROM stickers')
+        all_stickers = cursor.fetchall()
+        random_stickers = [random.choice(all_stickers) for _ in range(5)]
+
+        # Verificar quais figurinhas o usuário já possui
+        cursor.execute('SELECT sticker_id FROM inventariofig WHERE user_id = %s', (user_id,))
+        user_stickers = {row[0] for row in cursor.fetchall()}
+
+        # Adicionar as figurinhas ao inventário do usuário e determinar bordas
+        sticker_borders = []
+        for sticker_id, sticker_url in random_stickers:
+            if sticker_id in user_stickers:
+                # Figurinha repetida
+                border_color = 'black'
+                border_width = 2
+                cursor.execute('UPDATE inventariofig SET quantity = quantity + 1 WHERE user_id = %s AND sticker_id = %s', (user_id, sticker_id))
+            else:
+                # Figurinha nova
+                border_color = 'gold'
+                border_width = 5
+                cursor.execute('INSERT INTO inventariofig (user_id, sticker_id, quantity) VALUES (%s, %s, 1)', (user_id, sticker_id))
+                user_stickers.add(sticker_id)
+            sticker_borders.append((sticker_url, border_color, border_width))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+
+        # Baixar a imagem de fundo
+        background_url = 'https://telegra.ph/file/33879a99c60ca9d11e60c.png'
+        response = requests.get(background_url)
+        background = Image.open(BytesIO(response.content))
+
+        # Definir tamanho e layout da imagem final (quadrada)
+        width, height = background.size
+        sticker_width, sticker_height = 140, 210  # Tamanho das figurinhas
+        padding = 20  # Espaço entre figurinhas
+
+        # Redimensionar fundo para um quadrado se necessário
+        background = background.resize((width, width))
+
+        # Criar uma nova imagem com o fundo
+        img = Image.new('RGB', (width, width))
+        img.paste(background, (0, 0))
+
+        draw = ImageDraw.Draw(img)
+
+        # Coordenadas das 5 figurinhas (3-2 centralizado)
+        start_x = (width - 3 * sticker_width - 2 * padding) // 2
+        start_y = (width - 2 * sticker_height - padding) // 2
+
+        coordinates = [
+            (start_x, start_y),
+            (start_x + sticker_width + padding, start_y),
+            (start_x + 2 * (sticker_width + padding), start_y),
+            (start_x + (sticker_width // 2) + (padding // 2), start_y + sticker_height + padding),
+            (start_x + sticker_width + (padding // 2) + (sticker_width // 2) + padding, start_y + sticker_height + padding)
+        ]
+
+        # Adicionar as figurinhas à imagem
+        for (sticker_url, border_color, border_width), coord in zip(sticker_borders, coordinates):
+            response = requests.get(sticker_url)
+            sticker_image = Image.open(BytesIO(response.content))
+            sticker_image = sticker_image.resize((sticker_width, sticker_height))
+            
+            # Adicionar borda à figurinha
+            bordered_sticker = ImageOps.expand(sticker_image, border=border_width, fill=border_color)
+            
+            # Colar a figurinha na posição correta
+            img.paste(bordered_sticker, coord)
+
+        # Salvar a imagem final
+        result_image_path = 'random_stickers.png'
+        img.save(result_image_path)
+
+        # Enviar a imagem das figurinhas sorteadas
+        with open(result_image_path, 'rb') as photo:
+            bot.send_photo(message.chat.id, photo)
+
+        bot.reply_to(message, "5 figurinhas aleatórias foram adicionadas ao seu inventário!")
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao adicionar as figurinhas: {e}")
+@bot.message_handler(commands=['albf'])
+def send_missing_album_list(message):
+    user_id = message.from_user.id
+    page = 1
+    stickers_per_page = 9
+    missing_stickers, total_missing = get_missing_stickers(user_id, page, stickers_per_page)
+    total_pages = (total_missing + stickers_per_page - 1) // stickers_per_page
+
+    if not missing_stickers:
+        bot.reply_to(message, "Você já possui todas as figurinhas.")
+        return
+
+    user_name = message.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" for sticker in missing_stickers])
+    markup = get_missing_album_markup(page, total_pages)
+    bot.send_message(message.chat.id, f"Álbum de figurinhas faltantes de {user_name}:\n\n{total_missing}/40\n\n{album_text}", reply_markup=markup)
+@bot.message_handler(commands=['fig'])
+def send_sticker(message):
+    try:
+        args = message.text.split()
+        if len(args) != 2:
+            bot.reply_to(message, "Uso: /fig <id>")
+            return
+        
+        sticker_id = int(args[1].replace('luv', ''))
+        sticker = get_sticker_by_id(sticker_id)
+
+        if not sticker:
+            bot.reply_to(message, "Figurinha não encontrada.")
+            return
+
+        sticker_id, name, image_path = sticker
+
+        caption = f"ID: luv{sticker_id}\nNome: {name}"
+
+        # Enviar a imagem da figurinha diretamente pelo caminho fornecido
+        bot.send_photo(message.chat.id, image_path, caption=caption)
+
+    except Exception as e:
+        bot.reply_to(message, f"Houve um erro ao buscar a figurinha: {e}")
+
+@bot.message_handler(commands=['alb'])
+def send_album_list(message):
+    user_id = message.from_user.id
+    page = 1
+    stickers = get_user_stickers(user_id, page)
+    total_pages = get_total_pages(user_id)
+    total_stickers = get_total_stickers(user_id)
+
+    if not stickers:
+        bot.reply_to(message, "Você não possui figurinhas.")
+        return
+
+    user_name = message.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" + (f" (x{sticker[3]})" if sticker[3] > 1 else "") for sticker in stickers])
+    markup = get_album_markup(page, total_pages)
+    bot.send_message(message.chat.id, f"Álbum de figurinhas de {user_name}:\n\n{total_stickers}/40\n\n{album_text}", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('prev_') or call.data.startswith('next_'))
+def callback_page(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[1])
+    stickers = get_user_stickers(user_id, page)
+    total_pages = get_total_pages(user_id)
+    total_stickers = get_total_stickers(user_id)
+
+    if not stickers:
+        bot.answer_callback_query(call.id, "Nenhuma figurinha nesta página.")
+        return
+
+    user_name = call.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" + (f" (x{sticker[3]})" if sticker[3] > 1 else "") for sticker in stickers])
+    markup = get_album_markup(page, total_pages)
+    bot.edit_message_text(f"Álbum de figurinhas de {user_name}:\n\n{total_stickers}/40\n\n{album_text}", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('missing_prev_') or call.data.startswith('missing_next_'))
+def callback_page_missing(call):
+    user_id = call.from_user.id
+    page = int(call.data.split('_')[2])
+    stickers_per_page = 9
+    missing_stickers, total_missing = get_missing_stickers(user_id, page, stickers_per_page)
+    total_pages = (total_missing + stickers_per_page - 1) // stickers_per_page
+
+    if not missing_stickers:
+        bot.answer_callback_query(call.id, "Nenhuma figurinha faltante nesta página.")
+        return
+
+    user_name = call.from_user.first_name
+    album_text = '\n'.join([f"luv{sticker[0]} - {sticker[1]}" for sticker in missing_stickers])
+    markup = get_missing_album_markup(page, total_pages)
+    bot.edit_message_text(f"Álbum de figurinhas faltantes de {user_name}:\n\n{total_missing}/40\n\n{album_text}", chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+    bot.answer_callback_query(call.id)
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("submenus_"))
 def callback_submenus(call):
     try:
@@ -283,15 +943,15 @@ def process_wish(message):
             bot.send_message(chat_id, "A quantidade de cenouras deve ser entre 10 e 20.")
             return
 
-        if check_wish_time(user_id):
-            time_remaining = check_wish_time(user_id)
+        can_make_wish, time_remaining = check_wish_time(user_id)
+        if not can_make_wish:
             hours, remainder = divmod(time_remaining.total_seconds(), 3600)
             minutes, _ = divmod(remainder, 60)
             image_url = "https://telegra.ph/file/94c9c66af4ca4d6f0a3e5.jpg"
             caption = (f"<b>Você já fez um pedido recentemente.</b> Por favor, aguarde {int(hours)} horas e {int(minutes)} minutos "
                        "para fazer um novo pedido.")
             media = InputMediaPhoto(image_url, caption=caption, parse_mode="HTML")
-            bot.send_photo(chat_id, image_url, caption=caption, parse_mode="HTML")
+            bot.edit_message_media(media, chat_id=message.chat.id, message_id=message.message_id, reply_markup=create_wish_buttons())
             return
 
         results = []
@@ -299,20 +959,36 @@ def process_wish(message):
         diminuir_cenouras(user_id, quantidade_cenouras)
         for id_carta in id_cartas:
             chance = random.randint(1, 100)
-            if chance <= 15:  # % de chance
+            if chance <= 10:  # 10% de chance
                 results.append(id_carta)
                 update_inventory(user_id, id_carta)
-            debug_info.append(f"ID da carta: {id_carta}, Chance: {chance}, Resultado: {'Ganhou' if chance <= 15 else 'Não ganhou'}")
-        
+            debug_info.append(f"ID da carta: {id_carta}, Chance: {chance}, Resultado: {'Ganhou' if chance <= 10 else 'Não ganhou'}")
+
         if results:
             bot.send_message(chat_id, f"<i>As águas da fonte começam a circular em uma velocidade assutadora, mas antes que você possa reagir, aparece na sua cesta os seguintes peixes:<b> {', '.join(map(str, results))}.</b>\n\nA fonte então desaparece. Quem sabe onde ele estará daqui 6 horas?</i>", parse_mode="HTML")
         else:
             bot.send_message(chat_id, "<i>A fonte nem se move ao receber suas cenouras, elas apenas desaparecem no meio da água calma. Talvez você deva tentar novamente mais tarde... </i>", parse_mode="HTML")
 
+
         log_wish_attempt(user_id, id_cartas, quantidade_cenouras, results)
-        
+                # Agendar a próxima verificação
+        if lembrete_ativo("fonte", user_id):
+            scheduler.add_job(send_font_reminder, 'date', run_date=datetime.now() + timedelta(hours=6), args=[user_id])
+
     except Exception as e:
         bot.send_message(message.chat.id, f"Ocorreu um erro: {e}")
+        
+def lembrete_ativo(tipo, id_usuario):
+    conn, cursor = conectar_banco_dados()
+    try:
+        cursor.execute("SELECT %s FROM lembretes WHERE id_usuario = %s", (tipo, id_usuario))
+        result = cursor.fetchone()
+        return result and result[0]
+    finally:
+        fechar_conexao(cursor, conn)
+                
+def send_font_reminder(user_id):
+    bot.send_message(user_id, "Você já pode fazer um novo pedido na fonte dos desejos!")
 
 def edit_wishing_well_message(message):
     image_url = "https://telegra.ph/file/365f89b484f9de0005e75.png"
@@ -324,60 +1000,141 @@ def edit_wishing_well_message(message):
     media = InputMediaPhoto(image_url, caption=caption)
     bot.edit_message_media(media, chat_id=message.chat.id, message_id=message.message_id, reply_markup=create_wish_buttons())
 
-def process_wish(message):
-    try:
-        chat_id = message.chat.id
-        user_id = message.from_user.id
-        command_parts = message.text.split()
-        id_cartas = list(map(int, command_parts[:-1]))[:5]  # Limita a 5 cartas
-        quantidade_cenouras = int(command_parts[-1])
+# Função para buscar cartas com 30 ou mais unidades, ordenadas por categoria e quantidade
+def buscar_cartas_trintadas(user_id, offset):
+    conn, cursor = conectar_banco_dados()
+    query = """
+        SELECT p.emoji, p.nome, i.quantidade, p.subcategoria, p.id_personagem, p.categoria 
+        FROM inventario i
+        JOIN personagens p ON i.id_personagem = p.id_personagem
+        WHERE i.id_usuario = %s AND i.quantidade >= 30
+        ORDER BY p.categoria, i.quantidade DESC
+        LIMIT 15 OFFSET %s
+    """
+    cursor.execute(query, (user_id, offset))
+    cartas = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return cartas
 
-        if quantidade_cenouras < 10 or quantidade_cenouras > 20:
-            bot.send_message(chat_id, "A quantidade de cenouras deve ser entre 10 e 20.")
-            return
+# Função para buscar todas as cartas trintadas para pegar uma imagem aleatória
+def buscar_todas_cartas_trintadas(user_id):
+    conn, cursor = conectar_banco_dados()
+    query = """
+        SELECT p.imagem 
+        FROM inventario i
+        JOIN personagens p ON i.id_personagem = p.id_personagem
+        WHERE i.id_usuario = %s AND i.quantidade >= 30
+    """
+    cursor.execute(query, (user_id,))
+    imagens = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    conn.close()
+    return imagens
 
-        can_make_wish, time_remaining = check_wish_time(user_id)
-        if not can_make_wish:
-            hours, remainder = divmod(time_remaining.total_seconds(), 3600)
-            minutes, _ = divmod(remainder, 60)
-            bot.send_message(chat_id, f"Você já fez um pedido recentemente. Por favor, aguarde {int(hours)} horas e {int(minutes)} minutos para fazer um novo pedido.")
-            return
+# Função para contar o total de cartas com 30 ou mais unidades
+def contar_cartas_trintadas(user_id):
+    conn, cursor = conectar_banco_dados()
+    query = """
+        SELECT COUNT(*)
+        FROM inventario
+        WHERE id_usuario = %s AND quantidade >= 30
+    """
+    cursor.execute(query, (user_id,))
+    total_cartas = cursor.fetchone()[0]
+    cursor.close()
+    conn.close()
+    return total_cartas
 
-        results = []
-        debug_info = []
-        for id_carta in id_cartas:
-            chance = random.randint(1, 100)
-            if chance <= 10:  # 10% de chance
-                results.append(id_carta)
-                update_inventory(user_id, id_carta)
-            debug_info.append(f"ID da carta: {id_carta}, Chance: {chance}, Resultado: {'Ganhou' if chance <= 10 else 'Não ganhou'}")
+# Função para criar a mensagem das cartas trintadas
+def criar_mensagem_trintadas(cartas, pagina_atual, total_paginas, total_cartas, nome_usuario):
+    resposta = f"🐝 Cartas trintadas pelo camponês {nome_usuario}:\n\n"
+    for carta in cartas:
+        emoji, nome, quantidade, subcategoria, id_personagem, categoria = carta
+        resposta += f"{emoji} {id_personagem} • {nome}\nde {subcategoria} - {quantidade}⤫\n"
+    resposta += f"\n📄 {pagina_atual}/{total_paginas}"
+    return resposta
 
-        if results:
-            bot.send_message(chat_id, f"Parabéns! Você ganhou as cartas com os seguintes IDs: {', '.join(map(str, results))}.")
-        else:
-            bot.send_message(chat_id, "Infelizmente, você não ganhou nenhuma carta. Tente novamente mais tarde.")
-        
-        debug_message = "\n".join(debug_info)
-        bot.send_message(chat_id, f"Debug dos cálculos:\n{debug_message}")
+# Função para criar os botões de navegação
+def criar_markup_trintadas(pagina_atual, total_paginas, user_id_inicial, nome_usuario_inicial):
+    markup = InlineKeyboardMarkup()
+    if pagina_atual > 1:
+        markup.add(InlineKeyboardButton("⬅️", callback_data=f"trintadas_{user_id_inicial}_{pagina_atual - 1}_{nome_usuario_inicial}"))
+    if pagina_atual < total_paginas:
+        markup.add(InlineKeyboardButton("➡️", callback_data=f"trintadas_{user_id_inicial}_{pagina_atual + 1}_{nome_usuario_inicial}"))
+    return markup
 
-        log_wish_attempt(user_id, id_cartas, quantidade_cenouras, results)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"Ocorreu um erro: {e}")
+# Função para enviar a mensagem inicial de trintadas
+def enviar_mensagem_trintadas(message, pagina_atual):
+    user_id = message.from_user.id
+    nome_usuario = message.from_user.first_name
+    imagens = buscar_todas_cartas_trintadas(user_id)
+    if not imagens:
+        bot.send_message(message.chat.id, "Você não possui cartas com 30 ou mais unidades.")
+        return
+
+    imagem_aleatoria = random.choice(imagens)
+    offset = (pagina_atual - 1) * 15
+    cartas = buscar_cartas_trintadas(user_id, offset)
+    total_cartas = contar_cartas_trintadas(user_id)
+    total_paginas = (total_cartas + 14) // 15
+
+    resposta = criar_mensagem_trintadas(cartas, pagina_atual, total_paginas, total_cartas, nome_usuario)
+    markup = criar_markup_trintadas(pagina_atual, total_paginas, user_id, nome_usuario)
+
+    bot.send_photo(message.chat.id, photo=imagem_aleatoria, caption=resposta, reply_markup=markup, parse_mode="HTML")
+
+# Função para editar a mensagem de trintadas ao navegar pelas páginas
+def editar_mensagem_trintadas(call, user_id_inicial, pagina_atual, nome_usuario_inicial):
+    imagens = buscar_todas_cartas_trintadas(user_id_inicial)
+    if not imagens:
+        bot.send_message(call.message.chat.id, "Você não possui cartas com 30 ou mais unidades.")
+        return
+
+    imagem_aleatoria = random.choice(imagens)
+    offset = (pagina_atual - 1) * 15
+    cartas = buscar_cartas_trintadas(user_id_inicial, offset)
+    total_cartas = contar_cartas_trintadas(user_id_inicial)
+    total_paginas = (total_cartas + 14) // 15
+
+    resposta = criar_mensagem_trintadas(cartas, pagina_atual, total_paginas, total_cartas, nome_usuario_inicial)
+    markup = criar_markup_trintadas(pagina_atual, total_paginas, user_id_inicial, nome_usuario_inicial)
+
+    media = InputMediaPhoto(media=imagem_aleatoria, caption=resposta, parse_mode="HTML")
+    bot.edit_message_media(media=media, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
+
+# Comando /trintadas para mostrar as cartas com 30 ou mais unidades
+@bot.message_handler(commands=['trintadas', 'abelhadas', 'abelhas'])
+def handle_trintadas(message):
+    enviar_mensagem_trintadas(message, pagina_atual=1)
+
+# Callback para navegar entre as páginas das cartas trintadas
+@bot.callback_query_handler(func=lambda call: call.data.startswith('trintadas_'))
+def callback_trintadas(call):
+    data = call.data.split('_')
+    user_id_inicial = int(data[1])
+    pagina_atual = int(data[2])
+    nome_usuario_inicial = data[3]
+    editar_mensagem_trintadas(call, user_id_inicial, pagina_atual, nome_usuario_inicial)
+
 
 def check_wish_time(user_id):
     conn, cursor = conectar_banco_dados()
-    query = "SELECT MAX(timestamp) FROM wish_log WHERE id_usuario = %s"
-    cursor.execute(query, (user_id,))
-    result = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    if result[0]:
-        last_attempt = result[0]
-        now = datetime.now()
-        time_diff = now - last_attempt
-        if time_diff.total_seconds() < 21600:  # 6 horas em segundos
-            return False, timedelta(seconds=21600) - time_diff
-    return True, None
+    try:
+        cursor.execute("SELECT MAX(timestamp) FROM wish_log WHERE id_usuario = %s", (user_id,))
+        last_wish = cursor.fetchone()[0]
+
+        if last_wish:
+            time_since_last_wish = datetime.now() - last_wish
+            if time_since_last_wish.total_seconds() < 21600:  # 6 horas em segundos
+                return False, timedelta(seconds=21600) - time_since_last_wish
+            return True, None
+        return True, None
+    except Exception as e:
+        print(f"Erro ao verificar o tempo do último desejo: {e}")
+        return False, None
+    finally:
+        fechar_conexao(cursor, conn)
 
 def update_inventory(user_id, id_carta):
     conn, cursor = conectar_banco_dados()
@@ -1063,44 +1820,32 @@ def callback_confirmar_compra(call):
         print(f"Erro ao processar a compra: {e}")
     finally:
         fechar_conexao(cursor, conn)
-@bot.message_handler(func=lambda message: message.text and message.text.startswith('+festadacenoura'))
-def festadacenoura_command(message):
-    id_usuario = message.from_user.id
-
-    conn, cursor = conectar_banco_dados()
-
-    try:
-        query_verificar_uso = "SELECT usado FROM controle_festadacenoura WHERE id_usuario = %s"
-        cursor.execute(query_verificar_uso, (id_usuario,))
-        resultado = cursor.fetchone()
-
-        if resultado and resultado[0]:
-            bot.reply_to(message, "Você já pegou suas cenouras...")
-            return
-
-        query_adicionar_cenouras = "UPDATE usuarios SET cenouras = cenouras + 100 WHERE id_usuario = %s"
-        cursor.execute(query_adicionar_cenouras, (id_usuario,))
         
-        # Registra o uso do comando
-        if resultado:
-            query_registrar_uso = "UPDATE controle_festadacenoura SET usado = TRUE WHERE id_usuario = %s"
-        else:
-            query_registrar_uso = "INSERT INTO controle_festadacenoura (id_usuario, usado) VALUES (%s, TRUE)"
-        cursor.execute(query_registrar_uso, (id_usuario,))
-        
-        conn.commit()
-        bot.reply_to(message, "Parabéns! Você ganhou 100 cenouras na Festa da Cenoura! Use com moderação.")
-        
-    except mysql.connector.Error as err:
-        bot.reply_to(message, f"Erro ao processar o comando: {err}")
-    finally:
-        fechar_conexao(cursor, conn)
-        
-def fechar_conexao(cursor, conn):
-    if cursor is not None:
-        cursor.close()
-    if conn is not None:
-        conn.close()   
+
+@bot.message_handler(commands=['setmusica'])
+def set_musica_command(message):
+    command_parts = message.text.split(maxsplit=1)
+    if len(command_parts) == 2:
+        link_spotify = command_parts[1].strip()
+        id_usuario = message.from_user.id
+
+        # Extrair o ID da música do link do Spotify
+        try:
+            track_id = link_spotify.split("/")[-1].split("?")[0]
+            track_info = sp.track(track_id)
+            nome_musica = track_info['name']
+            artista = track_info['artists'][0]['name']
+            nova_musica = f"{nome_musica} - {artista}"
+
+            # Atualizar a coluna 'musica' no banco de dados
+            atualizar_coluna_usuario(id_usuario, 'musica', nova_musica)
+            bot.send_message(message.chat.id, f"Música atualizada para: {nova_musica}")
+        except Exception as e:
+            bot.send_message(message.chat.id, f"Erro ao processar o link do Spotify: {e}")
+    else:
+        bot.send_message(message.chat.id, "Formato incorreto. Use /setmusica seguido do link do Spotify, por exemplo: /setmusica https://open.spotify.com/track/xxxx.")
+
+@bot.message_handler(commands=['evento'])
 def evento_command(message):
     try:
         verificar_id_na_tabela(message.from_user.id, "ban", "iduser")
@@ -1113,7 +1858,6 @@ def evento_command(message):
         comando_parts = message.text.split('/evento ', 1)[1].strip().lower().split(' ')
         if len(comando_parts) >= 2:
             evento = comando_parts[1]
-            print(evento)
             subcategoria = ' '.join(comando_parts[1:])
         else:
             resposta = "Comando inválido. Use /evento <evento> <subcategoria>."
@@ -1129,18 +1873,23 @@ def evento_command(message):
             return
 
         if message.text.startswith('/evento s'):
-            resposta_completa = comando_evento_s(id_usuario, evento, subcategoria, cursor,usuario)
+            resposta_completa = comando_evento_s(id_usuario, evento, subcategoria, cursor, usuario)
         elif message.text.startswith('/evento f'):
-            resposta_completa = comando_evento_f(id_usuario, evento, subcategoria, cursor,usuario)
+            resposta_completa = comando_evento_f(id_usuario, evento, subcategoria, cursor, usuario)
         else:
             resposta = "Comando inválido. Use /evento s <evento> <subcategoria> ou /evento f <evento> <subcategoria>."
             bot.send_message(message.chat.id, resposta)
             return
 
         if isinstance(resposta_completa, tuple):
-            subcategoria_pesquisada, lista = resposta_completa
-            resposta = f"{lista}"
-            bot.send_message(message.chat.id, resposta)
+            subcategoria_pesquisada, lista, total_pages = resposta_completa
+            resposta = f"{lista}\n\nPágina 1 de {total_pages}"
+
+            markup = InlineKeyboardMarkup()
+            if total_pages > 1:
+                markup.add(InlineKeyboardButton("Próxima", callback_data=f"evento_next_{evento}_{subcategoria_pesquisada}_2"))
+
+            bot.send_message(message.chat.id, resposta, reply_markup=markup)
         else:
             bot.send_message(message.chat.id, resposta_completa)
     except ValueError as e:
@@ -1149,186 +1898,143 @@ def evento_command(message):
         bot.send_message(message.chat.id, mensagem_banido)
     finally:
         fechar_conexao(cursor, conn)
-        
-def comando_evento_s(id_usuario, evento, subcategoria, cursor,usuario):
-    subcategoria = subcategoria.strip().title()
-    def formatar_id(id_personagem):
-        return str(id_personagem).zfill(4)
-    sql_usuario = f"""
-        SELECT e.emoji, e.id_personagem, e.nome AS nome_personagem, e.subcategoria
-        FROM evento e
-        JOIN inventario i ON e.id_personagem = i.id_personagem
-        WHERE i.id_usuario = {id_usuario} AND e.evento = '{evento}'
-        ORDER BY e.id_personagem ASC;
-    """
 
-    cursor.execute(sql_usuario)
-    resultados_usuario = cursor.fetchall()
-    if resultados_usuario:
-        lista_cartas = ""
-        cartas_removidas = []
-
-        for carta in resultados_usuario:
-            id_carta = carta[1]
-            emoji_carta = carta[0]
-            nome_carta = carta[2]
-            subcategoria_carta = carta[3].title()
-            lista_cartas += f"{emoji_carta} {formatar_id(id_carta)} — {nome_carta}\n"
-        if lista_cartas:
-            resposta = f"🌾 | Cartas do evento {evento} no inventario de {usuario}:\n\n{lista_cartas}"
-            return subcategoria_carta, resposta
-    return f"🌧 Sem cartas de {subcategoria} no evento {evento}! A jornada continua..."
-
-
-def comando_evento_f(id_usuario, evento, subcategoria, cursor,usuario):
-    subcategoria = subcategoria.strip().title()
-    def formatar_id(id_personagem):
-        return str(id_personagem).zfill(4)
-    sql_faltantes = f"""
-        SELECT e.emoji, e.id_personagem, e.nome AS nome_personagem, e.subcategoria
-        FROM evento e
-        WHERE e.evento = '{evento}' 
-            AND NOT EXISTS (
-                SELECT 1
-                FROM inventario i
-                WHERE i.id_usuario = {id_usuario} AND i.id_personagem = e.id_personagem
-            )
-    """
-    cursor.execute(sql_faltantes)
-    resultados_faltantes = cursor.fetchall()
-
-    if resultados_faltantes:
-        lista_cartas = ""
-        for carta in resultados_faltantes:
-            id_carta = carta[1]
-            emoji_carta = carta[0]
-            nome_carta = carta[2]
-            subcategoria_carta = carta[3].title()
-            lista_cartas += f"{emoji_carta} {formatar_id(id_carta)} — {nome_carta}\n"
-        if lista_cartas:
-            resposta = f"☀️ | Cartas do evento {evento} que não estão no inventário de {usuario}:\n\n{lista_cartas}"
-            return subcategoria_carta, resposta
-    return f"☀️ Nada como a alegria de ter todas as cartas de {subcategoria} no evento {evento} na cesta!"
-
-def comando_evento_s(id_usuario, evento, subcategoria, cursor,usuario):
-    subcategoria = subcategoria.strip().title()
-    def formatar_id(id_personagem):
-        return str(id_personagem).zfill(4)
-    sql_usuario = f"""
-        SELECT e.emoji, e.id_personagem, e.nome AS nome_personagem, e.subcategoria
-        FROM evento e
-        JOIN inventario i ON e.id_personagem = i.id_personagem
-        WHERE i.id_usuario = {id_usuario} AND e.evento = '{evento}'
-        ORDER BY e.id_personagem ASC;
-    """
-
-    cursor.execute(sql_usuario)
-    resultados_usuario = cursor.fetchall()
-    if resultados_usuario:
-        lista_cartas = ""
-        cartas_removidas = []
-
-        for carta in resultados_usuario:
-            id_carta = carta[1]
-            emoji_carta = carta[0]
-            nome_carta = carta[2]
-            subcategoria_carta = carta[3].title()
-            lista_cartas += f"{emoji_carta} {formatar_id(id_carta)} — {nome_carta}\n"
-        if lista_cartas:
-            resposta = f"🌾 | Cartas do evento {evento} no inventario de {usuario}:\n\n{lista_cartas}"
-            return subcategoria_carta, resposta
-    return f"🌧 Sem cartas de {subcategoria} no evento {evento}! A jornada continua..."
-
-
-def comando_evento_f(id_usuario, evento, subcategoria, cursor,usuario):
-    subcategoria = subcategoria.strip().title()
-    def formatar_id(id_personagem):
-        return str(id_personagem).zfill(4)
-    sql_faltantes = f"""
-        SELECT e.emoji, e.id_personagem, e.nome AS nome_personagem, e.subcategoria
-        FROM evento e
-        WHERE e.evento = '{evento}' 
-            AND NOT EXISTS (
-                SELECT 1
-                FROM inventario i
-                WHERE i.id_usuario = {id_usuario} AND i.id_personagem = e.id_personagem
-            )
-    """
-    cursor.execute(sql_faltantes)
-    resultados_faltantes = cursor.fetchall()
-
-    if resultados_faltantes:
-        lista_cartas = ""
-        for carta in resultados_faltantes:
-            id_carta = carta[1]
-            emoji_carta = carta[0]
-            nome_carta = carta[2]
-            subcategoria_carta = carta[3].title()
-            lista_cartas += f"{emoji_carta} {formatar_id(id_carta)} — {nome_carta}\n"
-        if lista_cartas:
-            resposta = f"☀️ | Cartas do evento {evento} que não estão no inventário de {usuario}:\n\n{lista_cartas}"
-            return subcategoria_carta, resposta
-    return f"☀️ Nada como a alegria de ter todas as cartas de {subcategoria} no evento {evento} na cesta!"
-def verificar_evento(cursor, id_personagem):
-    try:
-        cursor.execute("SELECT id_personagem FROM evento WHERE id_personagem = %s", (id_personagem,))
-        result = cursor.fetchone()
-        cursor.fetchall()
-        return result is not None
+@bot.callback_query_handler(func=lambda call: call.data.startswith("evento_"))
+def callback_query_evento(call):
+    data_parts = call.data.split('_')
+    action = data_parts[1]
+    evento = data_parts[2]
+    subcategoria = data_parts[3]
+    page = int(data_parts[4])
     
-    except Exception as e:
-        print(f"Erro ao verificar evento: {e}")
-        return False
-
-
-def evento_command_handler(message):
     try:
-        verificar_id_na_tabela(message.from_user.id, "ban", "iduser")
         conn, cursor = conectar_banco_dados()
-        qnt_carta(message.from_user.id)
-        id_usuario = message.from_user.id
-        user = message.from_user
-        usuario = user.first_name
-        
-        comando_parts = message.text.split('/evento ', 1)[1].strip().lower().split(' ')
-        if len(comando_parts) >= 2:
-            evento = comando_parts[1]
-            print(evento)
-            subcategoria = ' '.join(comando_parts[1:])
-        else:
-            resposta = "Comando inválido. Use /evento <evento> <subcategoria>."
-            bot.send_message(message.chat.id, resposta)
-            return
+        id_usuario = call.from_user.id
+        usuario = call.from_user.first_name
 
-        sql_evento_existente = f"SELECT DISTINCT evento FROM evento WHERE evento = '{evento}'"
-        cursor.execute(sql_evento_existente)
-        evento_existente = cursor.fetchone()
-        if not evento_existente:
-            resposta = f"Evento '{evento}' não encontrado na tabela de eventos."
-            bot.send_message(message.chat.id, resposta)
-            return
+        if action == "prev":
+            page -= 1
+        elif action == "next":
+            page += 1
 
-        if message.text.startswith('/evento s'):
-            resposta_completa = comando_evento_s(id_usuario, evento, subcategoria, cursor,usuario)
-        elif message.text.startswith('/evento f'):
-            resposta_completa = comando_evento_f(id_usuario, evento, subcategoria, cursor,usuario)
+        if call.message.text.startswith('🌾'):
+            resposta_completa = comando_evento_s(id_usuario, evento, subcategoria, cursor, usuario, page)
         else:
-            resposta = "Comando inválido. Use /evento s <evento> <subcategoria> ou /evento f <evento> <subcategoria>."
-            bot.send_message(message.chat.id, resposta)
-            return
+            resposta_completa = comando_evento_f(id_usuario, evento, subcategoria, cursor, usuario, page)
 
         if isinstance(resposta_completa, tuple):
-            subcategoria_pesquisada, lista = resposta_completa
-            resposta = f"{lista}"
-            bot.send_message(message.chat.id, resposta)
+            subcategoria_pesquisada, lista, total_pages = resposta_completa
+            resposta = f"{lista}\n\nPágina {page} de {total_pages}"
+
+            markup = InlineKeyboardMarkup()
+            if page > 1:
+                markup.add(InlineKeyboardButton("Anterior", callback_data=f"evento_prev_{evento}_{subcategoria_pesquisada}_{page}"))
+            if page < total_pages:
+                markup.add(InlineKeyboardButton("Próxima", callback_data=f"evento_next_{evento}_{subcategoria_pesquisada}_{page}"))
+
+            bot.edit_message_text(resposta, chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=markup)
         else:
-            bot.send_message(message.chat.id, resposta_completa)
-    except ValueError as e:
-        print(f"Erro: {e}")
-        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
-        bot.send_message(message.chat.id, mensagem_banido)
+            bot.edit_message_text(resposta_completa, chat_id=call.message.chat.id, message_id=call.message.message_id)
+    except mysql.connector.Error as err:
+        bot.send_message(call.message.chat.id, f"Erro ao buscar perfil: {err}")
     finally:
         fechar_conexao(cursor, conn)
+
+
+def comando_evento_s(id_usuario, evento, subcategoria, cursor, usuario, page=1):
+    subcategoria = subcategoria.strip().title()
+    def formatar_id(id_personagem):
+        return str(id_personagem).zfill(4)
+    
+    items_per_page = 15
+    offset = (page - 1) * items_per_page
+    
+    sql_usuario = f"""
+        SELECT e.emoji, e.id_personagem, e.nome AS nome_personagem, e.subcategoria
+        FROM evento e
+        JOIN inventario i ON e.id_personagem = i.id_personagem
+        WHERE i.id_usuario = {id_usuario} AND e.evento = '{evento}'
+        ORDER BY e.id_personagem ASC
+        LIMIT {items_per_page} OFFSET {offset};
+    """
+    cursor.execute(sql_usuario)
+    resultados_usuario = cursor.fetchall()
+
+    sql_total = f"""
+        SELECT COUNT(*)
+        FROM evento e
+        JOIN inventario i ON e.id_personagem = i.id_personagem
+        WHERE i.id_usuario = {id_usuario} AND e.evento = '{evento}';
+    """
+    cursor.execute(sql_total)
+    total_items = cursor.fetchone()[0]
+    total_pages = ceil(total_items / items_per_page)
+    
+    if resultados_usuario:
+        lista_cartas = ""
+
+        for carta in resultados_usuario:
+            id_carta = carta[1]
+            emoji_carta = carta[0]
+            nome_carta = carta[2]
+            subcategoria_carta = carta[3].title()
+            lista_cartas += f"{emoji_carta} {formatar_id(id_carta)} — {nome_carta}\n"
+        if lista_cartas:
+            resposta = f"🌾 | Cartas do evento {evento} no inventario de {usuario}:\n\n{lista_cartas}"
+            return subcategoria_carta, resposta, total_pages
+    return f"🌧 Sem cartas de {subcategoria} no evento {evento}! A jornada continua..."
+
+def comando_evento_f(id_usuario, evento, subcategoria, cursor, usuario, page=1):
+    subcategoria = subcategoria.strip().title()
+    def formatar_id(id_personagem):
+        return str(id_personagem).zfill(4)
+    
+    items_per_page = 15
+    offset = (page - 1) * items_per_page
+    
+    sql_faltantes = f"""
+        SELECT e.emoji, e.id_personagem, e.nome AS nome_personagem, e.subcategoria
+        FROM evento e
+        WHERE e.evento = '{evento}' 
+            AND NOT EXISTS (
+                SELECT 1
+                FROM inventario i
+                WHERE i.id_usuario = {id_usuario} AND i.id_personagem = e.id_personagem
+            )
+        ORDER BY e.id_personagem ASC
+        LIMIT {items_per_page} OFFSET {offset};
+    """
+    cursor.execute(sql_faltantes)
+    resultados_faltantes = cursor.fetchall()
+
+    sql_total = f"""
+        SELECT COUNT(*)
+        FROM evento e
+        WHERE e.evento = '{evento}' 
+            AND NOT EXISTS (
+                SELECT 1
+                FROM inventario i
+                WHERE i.id_usuario = {id_usuario} AND i.id_personagem = e.id_personagem
+            );
+    """
+    cursor.execute(sql_total)
+    total_items = cursor.fetchone()[0]
+    total_pages = ceil(total_items / items_per_page)
+
+    if resultados_faltantes:
+        lista_cartas = ""
+
+        for carta in resultados_faltantes:
+            id_carta = carta[1]
+            emoji_carta = carta[0]
+            nome_carta = carta[2]
+            subcategoria_carta = carta[3].title()
+            lista_cartas += f"{emoji_carta} {formatar_id(id_carta)} — {nome_carta}\n"
+        if lista_cartas:
+            resposta = f"☀️ | Cartas do evento {evento} que não estão no inventário de {usuario}:\n\n{lista_cartas}"
+            return subcategoria_carta, resposta, total_pages
+    return f"☀️ Nada como a alegria de ter todas as cartas de {subcategoria} no evento {evento} na cesta!"
+
         
 def get_random_card_valentine(subcategoria):
     try:
@@ -1353,7 +2059,7 @@ def get_random_card_valentine(subcategoria):
             else:
                 return None
         else:
-            print("Nenhum evento fixo encontrado. Procedendo com lógica normal.")
+            return None
 
     except Exception as e:
         print(f"Erro ao verificar subcategoria na tabela de eventos: {e}")
@@ -1777,13 +2483,27 @@ def me_command(message):
             
             perfil = cursor.fetchone()
 
+            # Consulta SQL para obter o estado de casamento
+            query_obter_casamento = """
+                SELECT c.id_personagem, COALESCE(p.nome, e.nome) AS nome_parceiro
+                FROM casamentos c
+                LEFT JOIN personagens p ON c.id_personagem = p.id_personagem
+                LEFT JOIN evento e ON c.id_personagem = e.id_personagem
+                WHERE c.user_id = %s AND c.estado = 'casado'
+            """
+            cursor.execute(query_obter_casamento, (id_usuario,))
+            casamento = cursor.fetchone()
+
             if perfil:
                 nome, nome_usuario, fav, adm, qntcartas, cenouras, iscas, bio, musica, pronome, privado, user, beta, nome_fav, imagem_fav = perfil
 
                 resposta = f"<b>Perfil de {nome}</b>\n\n" \
                         f"✨ Fav: {fav} — {nome_fav}\n\n"
-                if user == "midnightsun":
-                    resposta += f"⭐️ Fã nº1 do Mabi Garden\n\n"
+                
+                if casamento:
+                    parceiro_id, parceiro_nome = casamento
+                    resposta += f"💍 Casado(a) com {parceiro_nome}\n\n"
+
                 if adm:
                     resposta += f"🌈 Adm: {adm.capitalize()}\n\n"
                 if beta:
@@ -1799,7 +2519,7 @@ def me_command(message):
                 resposta += f"✍ {bio}\n\n" \
                             f"🎧: {musica}"
 
-                enviar_perfil(message.chat.id, resposta, imagem_fav, fav, id_usuario,message)
+                enviar_perfil(message.chat.id, resposta, imagem_fav, fav, id_usuario, message)
             else:
                 bot.send_message(message.chat.id, "Perfil não encontrado.", reply_to_message_id=message.message_id)
         else:
@@ -1890,31 +2610,14 @@ def criar_markup_submenus(pagina_atual, total_paginas, subcategoria):
     markup = telebot.types.InlineKeyboardMarkup()
 
     if pagina_atual > 1:
-        btn_anterior = telebot.types.InlineKeyboardButton("⬅️ Anterior", callback_data=f"submenus_{pagina_atual-1}_{subcategoria}")
+        btn_anterior = telebot.types.InlineKeyboardButton("⬅️", callback_data=f"submenus_{pagina_atual-1}_{subcategoria}")
         markup.add(btn_anterior)
     
     if pagina_atual < total_paginas:
-        btn_proxima = telebot.types.InlineKeyboardButton("Próxima ➡️", callback_data=f"submenus_{pagina_atual+1}_{subcategoria}")
+        btn_proxima = telebot.types.InlineKeyboardButton("➡️", callback_data=f"submenus_{pagina_atual+1}_{subcategoria}")
         markup.add(btn_proxima)
 
     return markup
-
-@bot.message_handler(commands=['variações'])
-def verificar_comando_submenus(message):
-    try:
-        parametros = message.text.split(' ', 1)[1:]
-
-        if not parametros:
-            bot.reply_to(message, "Por favor, forneça a subcategoria.")
-            return
-
-        subcategoria = parametros[0] 
-
-        mostrar_primeira_pagina_submenus(message, subcategoria)
-
-    except Exception as e:
-        print(f"Erro ao processar comando /submenus: {e}")
-        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
 
         
 def mostrar_primeira_pagina_especies(message, categoria):
@@ -2095,48 +2798,6 @@ def create_wish_buttons():
     markup.add(InlineKeyboardButton(text="Cancelar", callback_data="pedido_cancelar"))
     return markup
 
-def process_wish(message):
-    try:
-        chat_id = message.chat.id
-        user_id = message.from_user.id
-        command_parts = message.text.split()
-        id_cartas = list(map(int, command_parts[:-1]))[:5]  # Limita a 5 cartas
-        quantidade_cenouras = int(command_parts[-1])
-
-        if quantidade_cenouras < 10 or quantidade_cenouras > 20:
-            bot.send_message(chat_id, "A quantidade de cenouras deve ser entre 10 e 20.")
-            return
-
-        can_make_wish, time_remaining = check_wish_time(user_id)
-        if not can_make_wish:
-            hours, remainder = divmod(time_remaining.total_seconds(), 3600)
-            minutes, _ = divmod(remainder, 60)
-            image_url = "https://telegra.ph/file/94c9c66af4ca4d6f0a3e5.jpg"
-            caption = (f"<b>Você já fez um pedido recentemente.</b> Por favor, aguarde {int(hours)} horas e {int(minutes)} minutos "
-                       "para fazer um novo pedido.")
-            media = InputMediaPhoto(image_url, caption=caption, parse_mode="HTML")
-            bot.edit_message_media(media, chat_id=message.chat.id, message_id=message.message_id, reply_markup=create_wish_buttons())
-            return
-
-        results = []
-        debug_info = []
-        diminuir_cenouras(user_id, quantidade_cenouras)
-        for id_carta in id_cartas:
-            chance = random.randint(1, 100)
-            if chance <= 10:  # 10% de chance
-                results.append(id_carta)
-                update_inventory(user_id, id_carta)
-
-        if results:
-            bot.send_message(chat_id, f"<i>As águas da fonte começam a circular em uma velocidade assutadora, mas antes que você possa reagir, aparece na sua cesta os seguintes peixes:<b> {', '.join(map(str, results))}.</b>\n\nA fonte então desaparece. Quem sabe onde ele estará daqui 6 horas?</i>", parse_mode="HTML")
-        else:
-            bot.send_message(chat_id, "<i>A fonte nem se move ao receber suas cenouras, elas apenas desaparecem no meio da água calma. Talvez você deva tentar novamente mais tarde... </i>", parse_mode="HTML")
-
-        log_wish_attempt(user_id, id_cartas, quantidade_cenouras, results)
-        
-    except Exception as e:
-        bot.send_message(message.chat.id, f"Ocorreu um erro: {e}")
-
        
 def qnt_carta(id_usuario):
     try:
@@ -2163,34 +2824,32 @@ def create_next_button_markup(current_index, total_count):
     button_callback = f"next_button_{current_index}_{total_count}"
     markup.add(types.InlineKeyboardButton(text=button_text, callback_data=button_callback))
     return markup
-
-def send_message_with_buttons(chat_id, mensagens, current_index=0):
+def send_message_without_buttons(chat_id, mensagens, current_index=0):
     total_count = len(mensagens)
 
-    if current_index < total_count:
-        media_url, mensagem = mensagens[current_index]
-        markup = create_next_button_markup(current_index + 1, total_count)
 
-        if media_url:
-            bot.send_photo(chat_id, media_url, caption=mensagem, reply_markup=markup)
-        else:
-            bot.send_message(chat_id, mensagem, reply_markup=markup)
-            
-        user_id = chat_id 
-        save_user_state(user_id, 'gnomes', mensagens, chat_id)
+    media_url, mensagem = mensagens[current_index]
 
+
+    if media_url:
+        bot.send_photo(chat_id, media_url, caption=mensagem)
     else:
-        bot.send_message(chat_id, "Não há mais personagens disponíveis.")
-        clear_user_state(chat_id, 'gnomes')
+        bot.send_message(chat_id, mensagem)
+            
+    user_id = chat_id 
+    save_user_state(user_id, 'gnomes', mensagens, chat_id)
 
+
+        
 @bot.message_handler(commands=['config'])
 def handle_config(message):
     markup = types.InlineKeyboardMarkup()
     btn1 = types.InlineKeyboardButton('Pronomes', callback_data='bpronomes_')
     btn2 = types.InlineKeyboardButton('Privacidade', callback_data='privacy')
+    btn3 = types.InlineKeyboardButton('Lembretes', callback_data='lembretes')
     btn_cancelar = types.InlineKeyboardButton('❌ Cancelar', callback_data='pcancelar')
     markup.add(btn1, btn2)
-    markup.add(btn_cancelar)
+    markup.add(btn3, btn_cancelar)
     bot.send_message(message.chat.id, "Escolha uma opção:", reply_markup=markup)
 
 def mostrar_opcoes_pronome(chat_id, message_id):
@@ -2251,32 +2910,50 @@ def editar_mensagem_privacidade(chat_id, message_id, nome_usuario, id_usuario, s
     mensagem = construir_mensagem_privacidade(nome_usuario, status_perfil)
 
     bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=mensagem, reply_markup=markup)
-    
+
 @bot.message_handler(commands=['gnome'])
 def gnome(message):
     chat_id = message.chat.id
     user_id = message.from_user.id
-    conn, cursor = conectar_banco_dados()
     idmens = message.message_id
     try:
-        nome = message.text.split('/gnome', 1)[1].strip()
-        sql_personagens = """
-            SELECT
-                p.id_personagem,
-                p.nome,
-                p.subcategoria,
-                p.categoria,
-                i.quantidade AS quantidade_usuario,
-                p.imagem
-            FROM personagens p
-            LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
-            WHERE p.nome LIKE %s
-        """
-        values_personagens = (user_id, f"%{nome}%")
+        partes = message.text.split()
+        if 'e' in partes:
+            # Se "e" está no comando, procura na tabela evento
+            nome = ' '.join(partes[2:])  # Pega todos os termos após "gnome e"
+            sql_personagens = """
+                SELECT
+                    e.id_personagem,
+                    e.nome,
+                    e.subcategoria,
+                    e.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    e.imagem
+                FROM evento e
+                LEFT JOIN inventario i ON e.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE e.nome LIKE %s
+            """
+        else:
+            # Senão, procura na tabela personagens
+            nome = ' '.join(partes[1:])  # Pega todos os termos após "gnome"
+            sql_personagens = """
+                SELECT
+                    p.id_personagem,
+                    p.nome,
+                    p.subcategoria,
+                    p.categoria,
+                    i.quantidade AS quantidade_usuario,
+                    p.imagem
+                FROM personagens p
+                LEFT JOIN inventario i ON p.id_personagem = i.id_personagem AND i.id_usuario = %s
+                WHERE p.nome LIKE %s
+            """
 
+        values_personagens = (user_id, f"%{nome}%")
+        conn, cursor = conectar_banco_dados()
         cursor.execute(sql_personagens, values_personagens)
         resultados_personagens = cursor.fetchall()
-        
+
         if len(resultados_personagens) == 1:
 
             mensagem = resultados_personagens[0]
@@ -2295,25 +2972,25 @@ def gnome(message):
             if gif_url:
                 imagem_url = gif_url
                 if imagem_url.lower().endswith(".gif"):
-                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                    bot.send_animation(chat_id, imagem_url, caption=mensagem,parse_mode="HTML")                  
                 elif imagem_url.lower().endswith(".mp4"):
-                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                    bot.send_video(chat_id, imagem_url, caption=mensagem,parse_mode="HTML") 
                 elif imagem_url.lower().endswith((".jpeg", ".jpg", ".png")):
-                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                    bot.send_photo(chat_id, imagem_url, caption=mensagem,parse_mode="HTML")                
                 else:
                     send_message_with_buttons(chat_id, idmens, [(None, mensagem)], reply_to_message_id=message.message_id)
             else:
                 if  imagem_url.lower().endswith(".gif"):
-                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                    bot.send_animation(chat_id, imagem_url, caption=mensagem,parse_mode="HTML")                  
                 elif imagem_url.lower().endswith(".mp4"):
-                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                    bot.send_video(chat_id, imagem_url, caption=mensagem,parse_mode="HTML") 
                 elif imagem_url.lower().endswith((".jpeg", ".jpg", ".png")):
-                    send_message_with_buttons(chat_id, idmens, [(imagem_url, mensagem)], reply_to_message_id=message.message_id)
+                    bot.send_photo(chat_id, imagem_url, caption=mensagem,parse_mode="HTML")                
                 else:
                     send_message_with_buttons(chat_id, idmens, [(None, mensagem)], reply_to_message_id=message.message_id)
                 
             user_id = chat_id
-            save_user_state(user_id, 'gnomes', mensagem, chat_id)
+            save_user_state(chat_id, [mensagem])  
 
         else:
             # Se houver mais de um resultado, envie a mensagem com botões
@@ -2336,7 +3013,7 @@ def gnome(message):
                 else:
                     mensagens.append((None, mensagem))
 
-            save_user_state(user_id, 'gnomes', mensagens, chat_id)
+            save_user_state(chat_id, mensagens)
             send_message_with_buttons(chat_id, idmens, mensagens, reply_to_message_id=message.message_id)
 
     except Exception as e:
@@ -2362,49 +3039,15 @@ def create_next_button_markup(current_index, total_count):
         markup.add(types.InlineKeyboardButton(text=next_button_text, callback_data=next_button_callback))
     return markup
 
-def send_message_with_buttons(chat_id, idmens, mensagens, current_index=0, reply_to_message_id=None):
-    total_count = len(mensagens)
-
-    if current_index < total_count:
-        media_url, mensagem = mensagens[current_index]
-        markup = create_navigation_markup(current_index, total_count)
-
-        if media_url.lower().endswith(".gif"):
-            bot.send_animation(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
-        elif media_url.lower().endswith(".mp4"):
-            bot.send_video(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
-        elif media_url.lower().endswith((".jpeg", ".jpg", ".png")):
-            bot.send_photo(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
-        else:
-            bot.send_message(chat_id, mensagem, reply_markup=markup, reply_to_message_id=reply_to_message_id)
-
-        user_id = chat_id
-        save_user_state(user_id, 'gnomes', mensagens, chat_id)
-
-    else:
-        bot.send_message(chat_id, "Não há mais personagens disponíveis.")
-        clear_user_state(chat_id, 'gnomes')
         
-def save_user_state(user_id, command, data, chat_id):
+def load_user_state(chat_id, command):
     conn, cursor = conectar_banco_dados()
     try:
-        cursor.execute("REPLACE INTO user_state (user_id, command, data, chat_id) VALUES (%s, %s, %s, %s)",
-                       (user_id, command, json.dumps(data), chat_id))
-        conn.commit()
-    finally:
-        fechar_conexao(cursor, conn)
-
-def load_user_state(user_id, command):
-    conn, cursor = conectar_banco_dados()
-    try:
-        cursor.execute("SELECT data, chat_id FROM user_state WHERE user_id = %s AND command = %s", (user_id, command))
+        cursor.execute("SELECT data FROM user_state WHERE chat_id = %s AND command = %s", (chat_id, command))
         result = cursor.fetchone()
         if result:
-            data = json.loads(result[0])
-            chat_id = result[1]
-            return data, chat_id
-        else:
-            return None, None
+            return json.loads(result[0]), chat_id
+        return None, None
     finally:
         fechar_conexao(cursor, conn)
 
@@ -2420,34 +3063,35 @@ def create_navigation_markup(current_index, total_count):
     markup = types.InlineKeyboardMarkup()
     buttons = []
 
-    if current_index == 0:
-        prev_button_text = f"⬅"
-        prev_button_callback = f"prev_button_{total_count}_{total_count}"
-        buttons.append(types.InlineKeyboardButton(text=prev_button_text, callback_data=prev_button_callback))      
-    elif current_index > 0:
-        prev_button_text = f"⬅"
-        prev_button_callback = f"prev_button_{current_index}_{total_count}"
-        buttons.append(types.InlineKeyboardButton(text=prev_button_text, callback_data=prev_button_callback))
-    elif current_index == total_count:
-        prev_button_text = f"⬅"
-        prev_button_callback = f"next_button_{current_index}_{total_count}"
-        next_button_text = f"➡️"
-        next_button_callback = f"next_button_{-1}_{total_count}"
-        buttons.append(types.InlineKeyboardButton(text=next_button_text, callback_data=next_button_callback))
-        buttons.append(types.InlineKeyboardButton(text=prev_button_text, callback_data=prev_button_callback))
-        
+    if current_index > 0:
+        prev_button = types.InlineKeyboardButton(text="⬅", callback_data=f"change_page_{current_index-1}")
+        buttons.append(prev_button)
+    
     if current_index < total_count - 1:
-        next_button_text = f"➡️"
-        next_button_callback = f"next_button_{current_index}_{total_count}"
-        buttons.append(types.InlineKeyboardButton(text=next_button_text, callback_data=next_button_callback))
-
-    else:
-        next_button_text = f"➡️"
-        next_button_callback = f"next_button_-1_{total_count}"
-        buttons.append(types.InlineKeyboardButton(text=next_button_text, callback_data=next_button_callback))
+        next_button = types.InlineKeyboardButton(text="➡", callback_data=f"change_page_{current_index+1}")
+        buttons.append(next_button)
+    
     markup.add(*buttons)
     return markup
 
+def send_message_with_buttons(chat_id, idmens, mensagens, current_index=0, reply_to_message_id=None):
+    total_count = len(mensagens)
+
+    if current_index < total_count:
+        media_url, mensagem = mensagens[current_index]
+        markup = create_navigation_markup(current_index, total_count)
+
+        if media_url.lower().endswith(".gif"):
+            bot.send_animation(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+        elif media_url.lower().endswith(".mp4"):
+            bot.send_video(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+        elif media_url.lower().endswith((".jpeg", ".jpg", ".png")):
+            bot.send_photo(chat_id, media_url, caption=mensagem, reply_markup=markup, parse_mode="HTML", reply_to_message_id=reply_to_message_id)
+        else:
+            bot.send_message(chat_id, mensagem, reply_markup=markup, reply_to_message_id=reply_to_message_id)
+    else:
+        bot.send_message(chat_id, "Não há mais personagens disponíveis.")
+        clear_user_state(chat_id, 'gnomes')
 
 @bot.message_handler(commands=['gnomes'])
 def gnome(message):
@@ -2558,7 +3202,7 @@ def obter_id_e_enviar_info_com_imagem(message):
             if resultado_evento:
                 id_personagem, nome, subcategoria, categoria, quantidade_usuario, imagem_url = resultado_evento
 
-                mensagem = f"💌 | Personagem: \n\n{id_personagem} • {nome}\nde {subcategoria}"
+                mensagem = f"💌 | Personagem: \n\n<code>{id_personagem}</code> • {nome}\nde {subcategoria}"
 
                 if quantidade_usuario == None:
                     mensagem += f"\n\n🌧 | Tempo fechado..."
@@ -2569,11 +3213,11 @@ def obter_id_e_enviar_info_com_imagem(message):
 
                 try:
                     if imagem_url.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        bot.send_photo(chat_id=message.chat.id, photo=imagem_url, caption=mensagem, reply_to_message_id=message.message_id)
+                        bot.send_photo(chat_id=message.chat.id, photo=imagem_url, caption=mensagem, reply_to_message_id=message.message_id,parse_mode="HTML")
                     elif imagem_url.lower().endswith(('.mp4', '.gif')):
-                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_to_message_id=message.message_id)
+                        bot.send_video(chat_id=message.chat.id, video=imagem_url, caption=mensagem, reply_to_message_id=message.message_id,parse_mode="HTML")
                 except Exception as e:
-                    bot.send_message(chat_id, mensagem, reply_to_message_id=message.message_id)
+                    bot.send_message(chat_id, mensagem, reply_to_message_id=message.message_id,parse_mode="HTML")
             else:
                 bot.send_message(chat_id, f"Nenhum resultado encontrado para o ID '{id_pesquisa}'.", reply_to_message_id=message.message_id)
 
@@ -2737,7 +3381,202 @@ def verificar_cesta(message):
     except Exception as e:
         print(f"Erro ao processar comando /cesta: {e}")
         bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+        
+@bot.message_handler(commands=['submenus'])
+def submenus_command(message):
+    try:
+        parts = message.text.split(' ', 1)
+        conn, cursor = conectar_banco_dados()
 
+        if len(parts) == 1:
+            # Nenhuma subcategoria fornecida, mostrar todos os submenus paginados
+            pagina = 1
+            submenus_por_pagina = 15
+
+            query_todos_submenus = """
+            SELECT subcategoria, submenu
+            FROM personagens
+            WHERE submenu IS NOT NULL AND submenu != ''
+            GROUP BY subcategoria, submenu
+            ORDER BY subcategoria, submenu
+            LIMIT %s OFFSET %s
+            """
+            offset = (pagina - 1) * submenus_por_pagina
+            cursor.execute(query_todos_submenus, (submenus_por_pagina, offset))
+            submenus = cursor.fetchall()
+
+            # Obter o total de submenus para paginação
+            cursor.execute("SELECT COUNT(DISTINCT subcategoria, submenu) FROM personagens WHERE submenu IS NOT NULL AND submenu != ''")
+            total_submenus = cursor.fetchone()[0]
+            total_paginas = (total_submenus // submenus_por_pagina) + (1 if total_submenus % submenus_por_pagina > 0 else 0)
+
+            if submenus:
+                mensagem = "<b>📂 Todos os Submenus:</b>\n\n"
+                for subcategoria, submenu in submenus:
+                    mensagem += f"🍎 {subcategoria} - {submenu}\n"
+                mensagem += f"\nPágina {pagina}/{total_paginas}"
+
+                # Criar botões de navegação
+                markup = InlineKeyboardMarkup()
+                if total_paginas > 1:
+                    markup.row(
+                        InlineKeyboardButton("⬅️", callback_data=f"navigate_submenus_{pagina - 1 if pagina > 1 else total_paginas}"),
+                        InlineKeyboardButton("➡️", callback_data=f"navigate_submenus_{pagina + 1 if pagina < total_paginas else 1}")
+                    )
+
+                bot.send_message(message.chat.id, mensagem, parse_mode="HTML", reply_to_message_id=message.message_id, reply_markup=markup)
+            else:
+                bot.send_message(message.chat.id, "Não foram encontrados submenus.", parse_mode="HTML", reply_to_message_id=message.message_id)
+
+        else:
+            # Subcategoria fornecida, mostrar submenus específicos da subcategoria
+            subcategoria = parts[1].strip()
+            query_submenus = """
+            SELECT DISTINCT submenu
+            FROM personagens
+            WHERE subcategoria = %s AND submenu IS NOT NULL AND submenu != ''
+            """
+            cursor.execute(query_submenus, (subcategoria,))
+            submenus = [row[0] for row in cursor.fetchall()]
+
+            if submenus:
+                mensagem = f"<b>📂 Submenus na subcategoria '{subcategoria.title()}':</b>\n\n"
+                for submenu in submenus:
+                    mensagem += f"🍎 {subcategoria} - {submenu}\n"
+            else:
+                mensagem = f"Não foram encontrados submenus para a subcategoria '{subcategoria.title()}'."
+
+            bot.send_message(message.chat.id, mensagem, parse_mode="HTML", reply_to_message_id=message.message_id)
+
+    except Exception as e:
+        print(f"Erro ao processar comando /submenus: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+    finally:
+        fechar_conexao(cursor, conn)
+
+# Handler para callback da navegação de páginas
+@bot.callback_query_handler(func=lambda call: call.data.startswith('navigate_submenus_'))
+def callback_navegacao_submenus(call):
+    try:
+        data = call.data.split('_')
+        pagina_str = data[-1]
+        pagina = int(pagina_str)
+        submenus_por_pagina = 15
+
+        conn, cursor = conectar_banco_dados()
+
+        query_todos_submenus = """
+        SELECT subcategoria, submenu
+        FROM personagens
+        WHERE submenu IS NOT NULL AND submenu != ''
+        GROUP BY subcategoria, submenu
+        ORDER BY subcategoria, submenu
+        LIMIT %s OFFSET %s
+        """
+        offset = (pagina - 1) * submenus_por_pagina
+        cursor.execute(query_todos_submenus, (submenus_por_pagina, offset))
+        submenus = cursor.fetchall()
+
+        # Obter o total de submenus para paginação
+        cursor.execute("SELECT COUNT(DISTINCT subcategoria, submenu) FROM personagens WHERE submenu IS NOT NULL AND submenu != ''")
+        total_submenus = cursor.fetchone()[0]
+        total_paginas = (total_submenus // submenus_por_pagina) + (1 if total_submenus % submenus_por_pagina > 0 else 0)
+
+        if submenus:
+            mensagem = "<b>📂 Todos os Submenus</b>\n\n"
+            for subcategoria, submenu in submenus:
+                mensagem += f"🍎 {subcategoria} - {submenu}\n"
+            mensagem += f"\nPágina {pagina}/{total_paginas}"
+
+            # Criar botões de navegação
+            markup = InlineKeyboardMarkup()
+            if total_paginas > 1:
+                markup.row(
+                    InlineKeyboardButton("⬅️ Anterior", callback_data=f"navigate_submenus_{pagina - 1 if pagina > 1 else total_paginas}"),
+                    InlineKeyboardButton("➡️ Próxima", callback_data=f"navigate_submenus_{pagina + 1 if pagina < total_paginas else 1}")
+                )
+
+            bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id, text=mensagem, parse_mode="HTML", reply_markup=markup)
+
+    except Exception as e:
+        print(f"Erro ao processar callback de navegação: {e}")
+        bot.answer_callback_query(call.id, "Ocorreu um erro ao processar sua solicitação.")
+    finally:
+        fechar_conexao(cursor, conn)
+
+        
+@bot.message_handler(commands=['submenu'])
+def submenu_command(message):
+    try:
+        parts = message.text.split(' ', 2)
+        if len(parts) < 3:
+            bot.reply_to(message, "Por favor, forneça o tipo ('s' ou 'f') e o nome do submenu após o comando, por exemplo: /submenu s bts")
+            return
+
+        tipo = parts[1].strip()
+        submenu = parts[2].strip()
+
+        id_usuario = message.from_user.id
+        nome_usuario = message.from_user.first_name
+
+        conn, cursor = conectar_banco_dados()
+
+        # Verifica os personagens que o usuário possui na subcategoria especificada
+        query_possui = """
+        SELECT per.id_personagem, per.nome, per.subcategoria
+        FROM inventario inv
+        JOIN personagens per ON inv.id_personagem = per.id_personagem
+        WHERE inv.id_usuario = %s AND per.submenu = %s
+        """
+        cursor.execute(query_possui, (id_usuario, submenu))
+        personagens_possui = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
+
+        # Verifica todos os personagens na subcategoria especificada
+        query_todos = """
+        SELECT id_personagem, nome, subcategoria
+        FROM personagens
+        WHERE submenu = %s
+        """
+        cursor.execute(query_todos, (submenu,))
+        todos_personagens = {row[0]: (row[1], row[2]) for row in cursor.fetchall()}
+
+        if tipo == 's':
+            # Mostrar os personagens que o usuário possui
+            mensagem = f"🌧️ A cesta de {nome_usuario} não está completa, mas o rio ainda tem muitos segredos!\n\n"
+            mensagem += f"🧺 | {list(personagens_possui.values())[0][1]} - {submenu.title()}\n" if personagens_possui else f"🧺 | Subcategoria Desconhecida - {submenu.title()}\n"
+            mensagem += f"📄 | 1/1\n"  # Paginação fixa para simplificação
+            mensagem += f"🐟 | {len(personagens_possui)}/{len(todos_personagens)}\n\n"
+            if personagens_possui:
+                for id_personagem, (nome, subcategoria) in personagens_possui.items():
+                    mensagem += f"{id_personagem} - {nome}\n"
+            else:
+                mensagem += "Você não possui nenhum personagem nesta subcategoria."
+
+        elif tipo == 'f':
+            # Mostrar os personagens que o usuário não possui
+            personagens_faltantes = {id_personagem: (nome, subcategoria) for id_personagem, (nome, subcategoria) in todos_personagens.items() if id_personagem not in personagens_possui}
+            mensagem = f"🌧️ A cesta de {nome_usuario} não está completa, mas o rio ainda tem muitos segredos!\n\n"
+            mensagem += f"🧺 | {list(todos_personagens.values())[0][1]} - {submenu.title()}\n" if todos_personagens else f"🧺 | Subcategoria Desconhecida - {submenu.title()}\n"
+            mensagem += f"📄 | 1/1\n"  # Paginação fixa para simplificação
+            mensagem += f"🐟 | {len(todos_personagens) - len(personagens_faltantes)}/{len(todos_personagens)}\n\n"
+            if personagens_faltantes:
+                for id_personagem, (nome, subcategoria) in personagens_faltantes.items():
+                    mensagem += f"{id_personagem} - {nome}\n"
+            else:
+                mensagem += "Você possui todos os personagens nesta subcategoria."
+
+        else:
+            bot.reply_to(message, "Tipo inválido. Use 's' para os personagens que você possui e 'f' para os que você não possui.")
+            return
+
+        bot.send_message(message.chat.id, mensagem, parse_mode="HTML", reply_to_message_id=message.message_id)
+
+    except Exception as e:
+        print(f"Erro ao processar comando /submenu: {e}")
+        bot.reply_to(message, "Ocorreu um erro ao processar sua solicitação.")
+    finally:
+        fechar_conexao(cursor, conn)
+        
 def obter_historico_trocas(id_usuario):
     try:
         conn, cursor = conectar_banco_dados()
@@ -2998,26 +3837,14 @@ def adicionar_tag(message):
                 if ids_personagens_str and nometag:
                     ids_personagens = [id_personagem.strip() for id_personagem in ids_personagens_str.split(',')]
                     
-                    valid_ids = []
-                    invalid_ids = []
-                    
                     for id_personagem in ids_personagens:
-                        cursor.execute("SELECT COUNT(*) FROM inventario WHERE id_usuario = %s AND id_personagem = %s", (id_usuario, id_personagem))
-                        count_inventario = cursor.fetchone()[0]
-                        
-                        if count_inventario > 0:
-                            valid_ids.append(id_personagem)
-                        else:
-                            invalid_ids.append(id_personagem)
+                        cursor.execute(
+                            "INSERT INTO tags (id_usuario, id_personagem, nometag) VALUES (%s, %s, %s)", 
+                            (id_usuario, id_personagem, nometag)
+                        )
                     
-                    if valid_ids:
-                        for id_personagem in valid_ids:
-                            cursor.execute("INSERT INTO tags (id_usuario, id_personagem, nometag) VALUES (%s, %s, %s)", (id_usuario, id_personagem, nometag))
-                            conn.commit()
-                        
-                        bot.reply_to(message, f"Tag '{nometag}' adicionada com sucesso.")
-                    else:
-                        bot.reply_to(message, "Nenhum ID de personagem válido encontrado.")
+                    conn.commit()
+                    bot.reply_to(message, f"Tag '{nometag}' adicionada com sucesso.")
                 else:
                     bot.reply_to(message, "Formato incorreto. Use /addtag id1,id2,... | nometag")
             else:
@@ -4317,57 +5144,6 @@ def obter_ids(message):
     except ValueError:
         bot.reply_to(message, "Os IDs devem ser números inteiros.")    
 
-
-@bot.message_handler(commands=['evento'])
-def evento_command(message):
-    try:
-        verificar_id_na_tabela(message.from_user.id, "ban", "iduser")
-        conn, cursor = conectar_banco_dados()
-        qnt_carta(message.from_user.id)
-        id_usuario = message.from_user.id
-        user = message.from_user
-        usuario = user.first_name
-        
-        comando_parts = message.text.split('/evento ', 1)[1].strip().lower().split(' ')
-        if len(comando_parts) >= 2:
-            evento = comando_parts[1]
-            print(evento)
-            subcategoria = ' '.join(comando_parts[1:])
-        else:
-            resposta = "Comando inválido. Use /evento <evento> <subcategoria>."
-            bot.send_message(message.chat.id, resposta)
-            return
-
-        sql_evento_existente = f"SELECT DISTINCT evento FROM evento WHERE evento = '{evento}'"
-        cursor.execute(sql_evento_existente)
-        evento_existente = cursor.fetchone()
-        if not evento_existente:
-            resposta = f"Evento '{evento}' não encontrado na tabela de eventos."
-            bot.send_message(message.chat.id, resposta)
-            return
-
-        if message.text.startswith('/evento s'):
-            resposta_completa = comando_evento_s(id_usuario, evento, subcategoria, cursor,usuario)
-        elif message.text.startswith('/evento f'):
-            resposta_completa = comando_evento_f(id_usuario, evento, subcategoria, cursor,usuario)
-        else:
-            resposta = "Comando inválido. Use /evento s <evento> <subcategoria> ou /evento f <evento> <subcategoria>."
-            bot.send_message(message.chat.id, resposta)
-            return
-
-        if isinstance(resposta_completa, tuple):
-            subcategoria_pesquisada, lista = resposta_completa
-            resposta = f"{lista}"
-            bot.send_message(message.chat.id, resposta)
-        else:
-            bot.send_message(message.chat.id, resposta_completa)
-    except ValueError as e:
-        print(f"Erro: {e}")
-        mensagem_banido = "Você foi banido permanentemente do garden. Entre em contato com o suporte caso haja dúvidas."
-        bot.send_message(message.chat.id, mensagem_banido)
-    finally:
-        fechar_conexao(cursor, conn)
-
 def choose_subcategoria_callback(call, subcategoria, cursor, conn,chat_id,message_id):
     try:
         categoria_info = ultimo_clique.get(call.message.chat.id, {})
@@ -4608,23 +5384,19 @@ def doar_cenoura(call):
     except Exception as e:
         print(f"Erro ao processar doar_cenoura: {e}")
 
-
 def aprovar_callback(call):
     try:
         data = call.data.replace('aprovar_', '').strip().split('_')
-        data_atual = datetime.now().strftime("%Y-%m-%d")
-        hora_atual = datetime.now().strftime("%H:%M:%S")
+
         conn, cursor = conectar_banco_dados()
-        if len(data) == 2:
-            id_usuario, id_personagem = data
-            
-            
+        if len(data) == 3:
+            id_usuario, id_personagem, message_id = data
+
             sql_temp_select = "SELECT valor FROM temp_data WHERE id_usuario = %s AND id_personagem = %s"
             values_temp_select = (id_usuario, id_personagem)
             cursor.execute(sql_temp_select, values_temp_select)
             link_gif = cursor.fetchone()
             cursor.fetchall()  
-
 
             if link_gif:
                 sql_check_gif = "SELECT idgif FROM gif WHERE id_usuario = %s AND id_personagem = %s"
@@ -4638,10 +5410,6 @@ def aprovar_callback(call):
                     sql_insert_gif = "INSERT INTO gif (id_personagem, id_usuario, link, timestamp) VALUES (%s, %s, %s, NOW())"
                     cursor.execute(sql_insert_gif, (id_personagem, id_usuario, link_gif[0]))
 
-                sql_logs = "INSERT INTO logs (id_usuario, nome_usuario, ação, horario, data, aprovado, adm) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-                values_logs = (id_usuario, obter_nome_usuario_por_id(id_usuario), 'gif', hora_atual, data_atual, 'sim', call.from_user.username if call.from_user.username else call.from_user.first_name)
-                cursor.execute(sql_logs, values_logs)
-
                 conn.commit()
                 mensagem = f"Seu GIF para o personagem {id_personagem} foi atualizado!"
                 bot.send_message(id_usuario, mensagem)
@@ -4649,36 +5417,42 @@ def aprovar_callback(call):
                 grupo_id = -1002144134360 
                 nome_usuario = obter_nome_usuario_por_id(id_usuario)
                 mensagem_grupo = f"🎉 O GIF para o personagem {id_personagem} de {nome_usuario} foi aprovado! 🎉"
-                bot.send_message(grupo_id, mensagem_grupo)
+
+                try:
+                    bot.edit_message_text(mensagem_grupo, chat_id=grupo_id, message_id=int(message_id))
+                except telebot.apihelper.ApiTelegramException as e:
+                    if "message to edit not found" in str(e):
+                        bot.send_message(grupo_id, mensagem_grupo)
+                    else:
+                        raise e
             else:
                 print("Link do GIF não encontrado.")
                 bot.send_message(call.message.chat.id, "Erro ao aprovar o GIF. Link não encontrado.")
         else:
-            print("Formato de callback incorreto. Esperado: 'aprovar_id_usuario_id_personagem'.")
+            print("Formato de callback incorreto. Esperado: 'aprovar_id_usuario_id_personagem_message_id'.")
     except Exception as e:
         import traceback
         traceback.print_exc()
-
     finally:
         fechar_conexao(cursor, conn)
 
 def reprovar_callback(call):
     try:
         data = call.data.replace('reprovar_', '').strip().split('_')
-        if len(data) == 2:
-            id_usuario, id_personagem = data
+        if len(data) == 3:
+            id_usuario, id_personagem, message_id = data
             mensagem = f"Seu gif para o personagem {id_personagem} foi recusado"
             bot.send_message(id_usuario, mensagem)
 
             grupo_id = -1002144134360
             nome_usuario = obter_nome_usuario_por_id(id_usuario)
             mensagem_grupo = f"O GIF para o personagem {id_personagem} de {nome_usuario} foi reprovado... 😐"
-            bot.send_message(grupo_id, mensagem_grupo)
+            bot.edit_message_text(mensagem_grupo, chat_id=grupo_id, message_id=int(message_id))
         else:
-            print("Formato de callback incorreto. Esperado: 'reprovar_id_usuario_id_personagem'")
+            print("Formato de callback incorreto. Esperado: 'reprovar_id_usuario_id_personagem_message_id'")
     except Exception as e:
         print(f"Erro ao processar reprovar_callback: {e}")
-
+        
 def compra_callback(call):
     try:
         chat_id = call.message.chat.id
@@ -4851,7 +5625,6 @@ def diminuir_cenouras(id_usuario, valor):
             if cenouras_atuais >= int(valor):
                 nova_quantidade = cenouras_atuais - int(valor)
                 cursor.execute("UPDATE usuarios SET cenouras = %s WHERE id_usuario = %s", (nova_quantidade, id_usuario))
-                print(f"Cenouras diminuídas para o usuário {id_usuario}.")
                 conn.commit()
             else:
                 print("Erro: Não há cenouras suficientes para diminuir.")
@@ -4875,7 +5648,6 @@ def diminuir_peixes(id_usuario, valor):
             if cenouras_atuais >= valor:
                 nova_quantidade = cenouras_atuais - valor
                 cursor.execute("UPDATE usuarios SET cenouras = %s WHERE id_usuario = %s", (nova_quantidade, id_usuario))
-                print(f"Cenouras diminuídas para o usuário {id_usuario}.")
                 conn.commit()
             else:
                 print("Erro: Não há cenouras suficientes para diminuir.")
@@ -5201,18 +5973,18 @@ def set_bio_command(message):
 
 def verifica_tempo_ultimo_gif(id_usuario):
     try:
+        # Consulta para obter o timestamp mais recente do gif enviado pelo usuário
         query_ultimo_gif = f"""
-            SELECT MAX(data) AS ultima_data, MAX(horario) AS ultima_hora 
-            FROM logs 
-            WHERE id_usuario = {id_usuario} AND ação = 'gif'
+            SELECT MAX(timestamp) AS ultima_hora 
+            FROM gif 
+            WHERE id_usuario = {id_usuario}
         """
         conn, cursor = conectar_banco_dados()
         cursor.execute(query_ultimo_gif)
         ultimo_gif = cursor.fetchone()
 
         if ultimo_gif and ultimo_gif[0]:
-            ultima_data_hora_str = f"{ultimo_gif[0]} {ultimo_gif[1]}"
-            ultimo_gif_datetime = datetime.strptime(ultima_data_hora_str, "%Y-%m-%d %H:%M:%S")
+            ultimo_gif_datetime = ultimo_gif[0]
             
             if ultimo_gif_datetime.date() == datetime.now().date():
                 ultimo_gif_datetime = ultimo_gif_datetime.replace(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day)
@@ -5230,6 +6002,8 @@ def verifica_tempo_ultimo_gif(id_usuario):
         print(f"Erro ao verificar tempo do último gif: {e}")
     finally:
         fechar_conexao(cursor, conn)
+        
+        
 
 @bot.message_handler(commands=['setgif'])
 def enviar_gif(message):
@@ -5237,21 +6011,50 @@ def enviar_gif(message):
         comando = message.text.split('/setgif', 1)[1].strip().lower()
         partes_comando = comando.split(' ')
         id_personagem = partes_comando[0]
+        id_usuario = message.from_user.id
 
-        if 'eusoqueriasernormal' in partes_comando:
-            tempo_restante = None  
-        else:
-            tempo_restante = verifica_tempo_ultimo_gif(message.from_user.id)
+        conn, cursor = conectar_banco_dados()
+        # Verificar se o lembrete para GIF está ativado
+        cursor.execute("SELECT gif FROM lembretes WHERE id_usuario = %s", (id_usuario,))
+        lembrete_gif_ativado = cursor.fetchone()
+        if lembrete_gif_ativado and not lembrete_gif_ativado[0]:
+            bot.send_message(message.chat.id, "Você não ativou o lembrete para GIFs.")
+            fechar_conexao(cursor, conn)
+            return
+
+        # Verificar se o usuário possui 30 unidades da carta
+        cursor.execute("SELECT quantidade FROM inventario WHERE id_usuario = %s AND id_personagem = %s", (id_usuario, id_personagem))
+        resultado = cursor.fetchone()
+        if not resultado or resultado[0] < 30:
+            bot.send_message(message.chat.id, "Você precisa ter pelo menos 30 unidades dessa carta para enviar um gif.")
+            fechar_conexao(cursor, conn)
+            return
+
+        if 'eusoqueriasernormal' not in partes_comando:
+            tempo_restante = verifica_tempo_ultimo_gif(id_usuario)
             if tempo_restante:
                 bot.send_message(message.chat.id, f"Você já enviou um gif recentemente. Aguarde {tempo_restante} antes de enviar outro.")
+                fechar_conexao(cursor, conn)
                 return
+
+        # Inserir novo gif na tabela e agendar notificação para uma hora depois
+        data_atual = datetime.now()
+        cursor.execute("INSERT INTO gif (id_usuario, id_personagem, timestamp) VALUES (%s, %s, %s)", (id_usuario, id_personagem, data_atual))
+        conn.commit()
+
+        scheduler.add_job(notificar_usuario_sobre_gif, 'date', run_date=data_atual + timedelta(hours=1), args=[id_usuario], replace_existing=True)
 
         bot.send_message(message.chat.id, "Eba! Você pode escolher um gif!\nEnvie o link do gif gerado pelo @UploadTelegraphBot:")
         links_gif[message.from_user.id] = id_personagem
         bot.register_next_step_handler(message, receber_link_gif, id_personagem)
-    
+
+        fechar_conexao(cursor, conn)
+
     except IndexError:
         bot.send_message(message.chat.id, "Por favor, forneça o ID do personagem.")
+    except Exception as e:
+        print(f"Erro ao processar o comando /setgif: {e}")
+        fechar_conexao(cursor, conn)
 
 def receber_link_gif(message, id_personagem):
     id_usuario = message.from_user.id
@@ -5268,15 +6071,13 @@ def receber_link_gif(message, id_personagem):
         if id_personagem:
             numero_personagem = id_personagem.split('_')[0]
             conn, cursor = conectar_banco_dados()
+
             sql_usuario = "SELECT nome_usuario, nome FROM usuarios WHERE id_usuario = %s"
-            values_usuario = (id_usuario,)
-            cursor.execute(sql_usuario, values_usuario)
+            cursor.execute(sql_usuario, (id_usuario,))
             resultado_usuario = cursor.fetchone()
-            username_usuario = message.from_user.username
 
             sql_personagem = "SELECT nome, subcategoria FROM personagens WHERE id_personagem = %s"
-            values_personagem = (numero_personagem,)
-            cursor.execute(sql_personagem, values_personagem)
+            cursor.execute(sql_personagem, (numero_personagem,))
             resultado_personagem = cursor.fetchone()
 
             if resultado_usuario and resultado_personagem:
@@ -5292,10 +6093,11 @@ def receber_link_gif(message, id_personagem):
                 chave = f"{id_usuario}_{numero_personagem}"
                 cursor.execute(sql_temp_insert, (id_usuario, numero_personagem, chave, link_gif))
                 conn.commit()
-
+                fechar_conexao(cursor, conn)
+                
                 keyboard = telebot.types.InlineKeyboardMarkup()
-                btn_aprovar = telebot.types.InlineKeyboardButton(text="✔️ Aprovar", callback_data=f"aprovar_{id_usuario}_{numero_personagem}")
-                btn_reprovar = telebot.types.InlineKeyboardButton(text="❌ Reprovar", callback_data=f"reprovar_{id_usuario}_{numero_personagem}")
+                btn_aprovar = telebot.types.InlineKeyboardButton(text="✔️ Aprovar", callback_data=f"aprovar_{id_usuario}_{numero_personagem}_{message.message_id}")
+                btn_reprovar = telebot.types.InlineKeyboardButton(text="❌ Reprovar", callback_data=f"reprovar_{id_usuario}_{numero_personagem}_{message.message_id}")
 
                 keyboard.row(btn_aprovar, btn_reprovar)
                 bot.forward_message(chat_id=-1002144134360, from_chat_id=message.chat.id, message_id=message.message_id)
@@ -5303,17 +6105,20 @@ def receber_link_gif(message, id_personagem):
                 mensagem = f"Pedido de aprovação de GIF:\n\n"
                 mensagem += f"ID Personagem: {numero_personagem}\n"
                 mensagem += f"{nome_personagem} de {subcategoria_personagem}\n\n"
-                mensagem += f"Usuário: @{username_usuario}\n"
+                mensagem += f"Usuário: @{message.from_user.username}\n"
                 mensagem += f"Nome: {nome_usuario}\n"
 
-                bot.send_message(chat_id, mensagem, reply_markup=keyboard)
+                sent_message = bot.send_message(chat_id, mensagem, reply_markup=keyboard)
                 bot.send_message(message.chat.id, "Link do GIF registrado com sucesso. Aguardando aprovação.")
+                return sent_message.message_id
             else:
+                fechar_conexao(cursor, conn)
                 bot.send_message(message.chat.id, "Erro ao obter informações do usuário ou do personagem.")
         else:
             bot.send_message(message.chat.id, "Erro ao processar o link do GIF. Por favor, use o comando /setgif novamente.")
     else:
         bot.send_message(message.chat.id, "Erro ao processar o link do GIF. ID de usuário inválido.")
+
 
 def verifica_inventario(id_usuario, id_personagem):
     conn, cursor = conectar_banco_dados()
@@ -6283,9 +7088,7 @@ def get_random_card_valentine(subcategoria):
     except Exception as e:
         return None
 
-def alternar_evento():
-    global evento_ativo
-    evento_ativo = not evento_ativo
+
 
 def get_random_subcategories_all_valentine(connection):
     cursor = connection.cursor()
@@ -6437,84 +7240,31 @@ def categoria_handler(message, categoria):
         conn, cursor = conectar_banco_dados()
 
         chat_id = message.chat.id 
-        evento_ativo = True
+        evento_ativo = False
         chance_evento = random.random()
-        if categoria.lower() == 'geral' and chance_evento <= 0.4:
-            evento_ativo = True
 
-            if evento_ativo:
-                subcategories_valentine = get_random_subcategories_all_valentine(conn)
-                if len(subcategories_valentine) >= 2:
-                    subcategories_aleatorias = random.sample(subcategories_valentine, k=2)
-                    image_link = "https://telegra.ph/file/d651e2963427bcc6972e0.jpg"
-                    caption = "Parece que o cupido gostou de você! Você pode escolher qual peixe levar: \n\n"
-                    markup = telebot.types.InlineKeyboardMarkup(row_width=2)
-                    emoji_numbers = ['💐', '💖']
-                    row_buttons = []
-                    for i, subcategory in enumerate(subcategories_aleatorias):
-                        caption += f"{emoji_numbers[i]} - {subcategory} \n"
-                        button_text = emoji_numbers[i]
-                        row_buttons.append(telebot.types.InlineKeyboardButton(button_text, callback_data=f"subcategory_{subcategory}_valentine"))
-                    markup.row(*row_buttons)
+        if categoria.lower() == 'geral':   # Se a categoria não for 'Geral', proceda com a lógica normal da tabela de personagens
+            subcategorias = buscar_subcategorias(categoria)
+            subcategorias = [subcategoria for subcategoria in subcategorias if subcategoria]
 
-                    imagem_url = "https://telegra.ph/file/8a50bf408515b52a36734.jpg"
-                    bot.edit_message_media(
-                        chat_id=message.chat.id,
-                        message_id=message.message_id,
-                        reply_markup=markup,
-                        media=telebot.types.InputMediaPhoto(media=imagem_url,
-                                                            caption=caption)
-                    )
+            if subcategorias:
+                resposta_texto = "Sua isca atraiu 6 espécies, qual peixe você vai levar?\n\n"
+                subcategorias_aleatorias = random.sample(subcategorias, min(6, len(subcategorias)))
 
-                                
-
-                else:
-                    caption = "Parece que o cupido não quis comemorar agora... \n\nO que será que você vai levar?\n\n"
-                    emoji_numbers = ['💐', '💖']
-                    subcategoria_aleatoria = random.choice(emoji_numbers)
-                    subcategories_valentine = get_random_subcategories_all_valentine(conn)
-
-                    keyboard = telebot.types.InlineKeyboardMarkup()
-                    button = telebot.types.InlineKeyboardButton(subcategoria_aleatoria, callback_data=f"subcategory_{subcategories_valentine[emoji_numbers.index(subcategoria_aleatoria)]}_valentine")
-
-                    keyboard.add(button)
-
-                    # Marca o botão como clicado
-                    botao_clicado = True
-
-                    imagem_url = "https://telegra.ph/file/8a50bf408515b52a36734.jpg"
-                    bot.edit_message_media(
-                        chat_id=message.chat.id,
-                        message_id=message.message_id,
-                        reply_markup=keyboard,
-                        media=telebot.types.InputMediaPhoto(media=imagem_url,
-                                                            caption=caption)
-                    )
-
-        else:
-            if categoria.lower() == 'geral':   # Se a categoria não for 'Geral', proceda com a lógica normal da tabela de personagens
-                subcategorias = buscar_subcategorias(categoria)
-                subcategorias = [subcategoria for subcategoria in subcategorias if subcategoria]
-
-                if subcategorias:
-                    # Envia mensagem de botões
-                    resposta_texto = "Poxa, Parece que o cupido não está afim de comemorar... \nSua isca trouxe esses peixes normais:\n\n"
-                    subcategorias_aleatorias = random.sample(subcategorias, min(6, len(subcategorias)))
-
-                    for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
+                for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
                         resposta_texto += f"{i}\uFE0F\u20E3 - {subcategoria}\n"
 
-                    markup = telebot.types.InlineKeyboardMarkup(row_width=6)
+                markup = telebot.types.InlineKeyboardMarkup(row_width=6)
 
-                    row_buttons = []
-                    for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
-                        button_text = f"{i}\uFE0F\u20E3"
-                        callback_data = f"choose_subcategoria_{subcategoria}"
-                        row_buttons.append(telebot.types.InlineKeyboardButton(button_text, callback_data=callback_data))
+                row_buttons = []
+                for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
+                    button_text = f"{i}\uFE0F\u20E3"
+                    callback_data = f"choose_subcategoria_{subcategoria}"
+                    row_buttons.append(telebot.types.InlineKeyboardButton(button_text, callback_data=callback_data))
 
-                    markup.row(*row_buttons)
-                    imagem_url="https://telegra.ph/file/8a50bf408515b52a36734.jpg"
-                    bot.edit_message_media(
+                markup.row(*row_buttons)
+                imagem_url="https://telegra.ph/file/8a50bf408515b52a36734.jpg"
+                bot.edit_message_media(
                         chat_id=message.chat.id,
                         message_id=message.message_id,
                         reply_markup=markup,
@@ -6522,34 +7272,34 @@ def categoria_handler(message, categoria):
                                                             caption=resposta_texto)
                     )
 
-                else:
-                    bot.send_message(message.chat.id, f"Nenhuma subcategoria encontrada para a categoria '{categoria}'.")
             else:
+                bot.send_message(message.chat.id, f"Nenhuma subcategoria encontrada para a categoria '{categoria}'.")
+        else:
                             # Se a categoria não for 'Geral', proceda com a lógica normal da tabela de personagens
-                subcategorias = buscar_subcategorias(categoria)
-                subcategorias = [subcategoria for subcategoria in subcategorias if subcategoria]
+            subcategorias = buscar_subcategorias(categoria)
+            subcategorias = [subcategoria for subcategoria in subcategorias if subcategoria]
                 #isca texto
-                if subcategorias:
-                    resposta_texto = "Sua isca atraiu 6 espécies, qual peixe você vai levar?\n\n"
-                    subcategorias_aleatorias = random.sample(subcategorias, min(6, len(subcategorias)))
+            if subcategorias:
+                resposta_texto = "Sua isca atraiu 6 espécies, qual peixe você vai levar?\n\n"
+                subcategorias_aleatorias = random.sample(subcategorias, min(6, len(subcategorias)))
 
-                    for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
-                        resposta_texto += f"{i}\uFE0F\u20E3 - {subcategoria}\n"
+                for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
+                    resposta_texto += f"{i}\uFE0F\u20E3 - {subcategoria}\n"
 
-                    markup = telebot.types.InlineKeyboardMarkup(row_width=6)
+                markup = telebot.types.InlineKeyboardMarkup(row_width=6)
 
-                    row_buttons = []
-                    for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
-                        button_text = f"{i}\uFE0F\u20E3"
-                        chat_id=message.chat.id
-                        message_id=message.message_id
-                        callback_data = f"choose_subcategoria_{subcategoria}"
-                        row_buttons.append(telebot.types.InlineKeyboardButton(button_text, callback_data=callback_data))
+                row_buttons = []
+                for i, subcategoria in enumerate(subcategorias_aleatorias, start=1):
+                    button_text = f"{i}\uFE0F\u20E3"
+                    chat_id=message.chat.id
+                    message_id=message.message_id
+                    callback_data = f"choose_subcategoria_{subcategoria}"
+                    row_buttons.append(telebot.types.InlineKeyboardButton(button_text, callback_data=callback_data))
 
-                    markup.row(*row_buttons)
+                markup.row(*row_buttons)
 
-                    imagem_url = "https://telegra.ph/file/8a50bf408515b52a36734.jpg"
-                    bot.edit_message_media(
+                imagem_url = "https://telegra.ph/file/8a50bf408515b52a36734.jpg"
+                bot.edit_message_media(
                         chat_id=message.chat.id,
                         message_id=message.message_id,
                         reply_markup=markup,
@@ -6570,10 +7320,10 @@ def verificar_subcategoria_evento(subcategoria, cursor):
             (subcategoria,))
         evento_aleatorio = cursor.fetchone()
         if evento_aleatorio:
-            print(f"Evento fixo aleatório: {evento_aleatorio}")
+
             chance = random.randint(1, 100)
 
-            if chance <= 20:
+            if chance <= 40:
                 id_personagem, nome, subcategoria, imagem = evento_aleatorio
                 evento_formatado = {
                     'id_personagem': id_personagem,
@@ -6585,7 +7335,7 @@ def verificar_subcategoria_evento(subcategoria, cursor):
             else:
                 return None
         else:
-            print("Nenhum evento fixo encontrado. Procedendo com lógica normal.")
+            return None
 
     except Exception as e:
         print(f"Erro ao verificar subcategoria na tabela de eventos: {e}")
