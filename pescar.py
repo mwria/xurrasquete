@@ -184,9 +184,11 @@ def send_card_message(message, *args, cursor=None, conn=None):
             subcategoria = evento_aleatorio['subcategoria']
             add_to_inventory(id_usuario, id_personagem)
             quantidade = verifica_inventario_troca(id_usuario, id_personagem)
+            quantidade_display = "☀" if quantidade == 1 else "☀ 𖡩"
+
             if evento_aleatorio['imagem'] is None:
                 imagem = "https://telegra.ph/file/8a50bf408515b52a36734.jpg"
-                text = f"🎣 Parabéns! Sua isca era boa e você recebeu:\n\n {evento_aleatorio['id_personagem']} - {evento_aleatorio['nome']}\nde {subcategoria_display}\nQuantidade de cartas: {quantidade}"
+                text = f"🎣 Parabéns! Sua isca era boa e você recebeu:\n\n🪴 {evento_aleatorio['id_personagem']} - {evento_aleatorio['nome']}\nde {subcategoria_display}\n\n{quantidade_display}"
                 try:
                     bot.edit_message_media(
                         chat_id=message.chat.id,
@@ -195,7 +197,7 @@ def send_card_message(message, *args, cursor=None, conn=None):
                 except Exception:
                     bot.send_photo(chat_id=message.chat.id, photo=imagem, caption=text)
             else:
-                text = f"🎣 Parabéns! Sua isca era boa e você recebeu:\n\n💐 ∙ {evento_aleatorio['id_personagem']} — {evento_aleatorio['nome']}\nde {subcategoria_display}\nQuantidade de cartas: {quantidade}"
+                text = f"🎣 Parabéns! Sua isca era boa e você recebeu:\n\n🪴 ∙ {evento_aleatorio['id_personagem']} — {evento_aleatorio['nome']}\nde {subcategoria_display}\n{quantidade_display}"
                 imagem = evento_aleatorio['imagem']
                 try:
                     if imagem.lower().endswith(('.jpg', '.jpeg', '.png')):
@@ -214,8 +216,6 @@ def send_card_message(message, *args, cursor=None, conn=None):
                     elif imagem.lower().endswith(('.mp4', '.gif')):
                         bot.send_video(chat_id=message.chat.id, video=imagem, caption=text)
             register_card_history(id_usuario, id_personagem)
-            if quantidade == 50:
-                bot.send_message(id_usuario, f"🎉 Parabéns! Você alcançou 50 cartas do personagem! Considere entrar no cativeiro da carta usando o comando <code>/seeds {id_personagem}</code> para crescer o limite junto.")
         elif len(args) == 5:
             emoji_categoria, id_personagem, nome, subcategoria, imagem = args
             subcategoria_display = subcategoria.split('_')[-1]
@@ -252,8 +252,8 @@ def send_card_message(message, *args, cursor=None, conn=None):
                     elif imagem.lower().endswith(('.mp4', '.gif')):
                         bot.send_video(chat_id=message.chat.id, video=imagem, caption=text)
             register_card_history(id_usuario, id_personagem)
-            if quantidade == 50:
-                bot.send_message(id_usuario, "🎉 Parabéns! Você alcançou 50 cartas do personagem!")
+            if quantidade == 30:
+                bot.send_message(id_usuario, "🎉 Parabéns! Você alcançou 30 cartas do personagem, pode pedir um gif usando o comando /setgif!")
         else:
             print("Número incorreto de argumentos.")
     except Exception as e:
@@ -307,7 +307,7 @@ def verificar_subcategoria_evento(subcategoria, cursor):
         if evento_aleatorio:
             chance = random.randint(1, 100)
 
-            if chance <= 20:
+            if chance <= 40:
                 id_personagem, nome, subcategoria, imagem = evento_aleatorio
                 evento_formatado = {
                     'id_personagem': id_personagem,
